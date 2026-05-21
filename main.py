@@ -5,7 +5,7 @@ import sys
 import pygame
 import config
 from player   import Player
-from sprites  import Plataforma, Moeda
+from sprites  import Plataforma, Moeda, Inimigo
 from camera   import Camera
 
 
@@ -118,6 +118,68 @@ class Game:
         for cx, cy in moedas_dados:
             self.moedas.add(Moeda(cx, cy))
 
+        # --- Inimigos -------------------------------------------------
+        # Inimigo(x, y, x_min, x_max, velocidade)
+        # x, y   → topleft do sprite em coords de mundo
+        # x_min  → borda esquerda da patrulha (rect.left mínimo)
+        # x_max  → borda direita  da patrulha (rect.right máximo)
+        # Posicionamos cada inimigo em plataformas longas o suficiente
+        # para a patrulha ser visível e desafiadora.
+        self.inimigos = pygame.sprite.Group()
+
+        inimigos_dados = [
+            # (  x,    y,  x_min,  x_max,  vel)   plataforma base
+            (  810,  310,    800,   1000,  110),  # plat longa x=800
+            (  860,  310,    800,   1000,  150),  # segundo inimigo, mais rápido
+            ( 1960,  210,   1950,   2150,  130),  # plat alta x=1950
+            ( 2050,  210,   1950,   2150,   90),  # segundo, mais lento
+            ( 2610,  360,   2600,   2780,  120),  # planície x=2600
+            ( 1090,  220,   1080,   1220,  100),  # subida x=1080
+            ( 1690,  390,   1680,   1860,  140),  # retorno x=1680
+        ]
+        for x, y, xmin, xmax, vel in inimigos_dados:
+            self.inimigos.add(Inimigo(x, y, xmin, xmax, vel))
+
+        # --- Spawn do jogador (usado no respawn) ----------------------
+        # Guardamos a posição inicial para poder reiniciar sem recriar tudo.
+        self._spawn_x: float = float(config.SCREEN_WIDTH // 2 - 20)
+        self._spawn_y: float = 100.0
+
+    # ------------------------------------------------------------------
+    # RESPAWN
+    # ------------------------------------------------------------------
+    def _respawn(self):
+        """
+        Reinicia o jogador na posição de spawn sem recriar o nível.
+
+        O que é resetado:
+          • posição e velocidade do jogador
+          • câmera (volta ao início)
+          • score zerado
+
+        O que é PRESERVADO (decisão de design):
+          • moedas já coletadas permanecem coletadas
+            → penalidade é perder o score, não refazer tudo
+          • inimigos continuam onde estão
+
+        Para um reset completo de fase, chame self.__init__() em vez
+        disso — mas isso recria a janela, o que causa um flash visível.
+        A abordagem abaixo é instantânea e sem artefatos visuais.
+        """
+        # Reseta estado do jogador
+        self.player.x      = self._spawn_x
+        self.player.y      = self._spawn_y
+        self.player.vel_x  = 0.0
+        self.player.vel_y  = 0.0
+        self.player.no_chao = False
+        self.player.rect.topleft = (int(self._spawn_x), int(self._spawn_y))
+
+        # Reseta câmera para o início do mundo
+        self.camera.offset_x = 0.0
+
+        # Penalidade: perde o score acumulado
+        self.score = 0
+
     # ------------------------------------------------------------------
     # 1. EVENTOS
     # ------------------------------------------------------------------
@@ -137,6 +199,9 @@ class Game:
     def update(self, dt: float):
         self.player.update(dt, self.plataformas)
 
+        # Atualiza inimigos (movimento de patrulha)
+        self.inimigos.update(dt)
+
         # Colisão jogador ↔ moedas
         # spritecollide retorna a lista de moedas tocadas neste frame.
         # dokill=True remove cada moeda tocada dos seus grupos automaticamente
@@ -145,6 +210,11 @@ class Game:
             self.player, self.moedas, dokill=True
         )
         self.score += len(coletadas) * 10   # +10 por moeda (usa Moeda.VALOR implicitamente)
+
+        # Colisão jogador ↔ inimigos → respawn
+        # dokill=False: o inimigo NÃO morre — ele continua patrulhando.
+        if pygame.sprite.spritecollide(self.player, self.inimigos, dokill=False):
+            self._respawn()
 
         # A câmera sempre atualiza DEPOIS do jogador para ler a posição final.
         self.camera.update(self.player.rect)
@@ -173,6 +243,10 @@ class Game:
         # Moedas — mesmo padrão das plataformas: blit com offset da câmera
         for moeda in self.moedas:
             self.screen.blit(moeda.image, self.camera.aplicar(moeda.rect))
+
+        # Inimigos
+        for inimigo in self.inimigos:
+            self.screen.blit(inimigo.image, self.camera.aplicar(inimigo.rect))
 
         # --- HUD ------------------------------------------------------
         # Criamos a fonte uma vez por frame. Para produção, mova para __init__.

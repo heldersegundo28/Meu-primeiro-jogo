@@ -24,3 +24,5 @@ BLUE       = (50,  100, 220)
 SKY_BLUE   = (135, 206, 235)  # cor de fundo padrão da cena
 YELLOW     = (255, 220,  0)   # moedas e elementos dourados
 GOLD       = (255, 180,  0)   # borda/detalhe das moedas
+PURPLE     = (160,  30, 200)  # corpo do inimigo
+DARK_RED   = (160,  20,  20)  # olhos/detalhe do inimigo
