@@ -53,3 +53,54 @@ class Plataforma(pygame.sprite.Sprite):
 
     # Plataformas são estáticas — não precisam de update().
     # Para plataformas móveis no futuro, basta sobrescrever este método.
+
+
+# ══════════════════════════════════════════════════════════════════════
+class Moeda(pygame.sprite.Sprite):
+    """
+    Coletável que o jogador pode tocar para ganhar pontos.
+
+    Visual: círculo amarelo com anel dourado desenhado em uma Surface
+    transparente, sem depender de imagens externas.
+
+    Por que usar SRCALPHA na Surface?
+    ──────────────────────────────────
+    pygame.Surface((w, h)) cria uma superfície opaca preta por padrão.
+    Com o flag SRCALPHA cada pixel tem um canal alfa de 0–255, permitindo
+    transparência. Assim o "fundo" do círculo não aparece — só o disco.
+
+    Hitbox vs visual
+    ─────────────────
+    self.rect é quadrado (bounding box do círculo). Na colisão com o jogador
+    isso é levemente mais permissivo do que o círculo exato, mas imperceptível
+    em gameplay e muito mais simples de calcular.
+    """
+
+    TAMANHO   = 18            # diâmetro em pixels
+    COR       = config.YELLOW
+    COR_BORDA = config.GOLD
+    VALOR     = 10            # pontos concedidos ao coletar
+
+    def __init__(self, x: int, y: int):
+        """
+        Parâmetros
+        ----------
+        x, y : centro da moeda em coordenadas de mundo.
+               Usar o centro facilita posicionar a moeda "acima de uma
+               plataforma" sem precisar compensar pelo raio manualmente.
+        """
+        super().__init__()
+
+        d = self.TAMANHO
+        r = d // 2
+
+        # Surface transparente do tamanho exato da moeda
+        self.image = pygame.Surface((d, d), pygame.SRCALPHA)
+
+        # Disco amarelo preenchido
+        pygame.draw.circle(self.image, self.COR,       (r, r), r)
+        # Anel dourado (borda de 2px) para dar profundidade
+        pygame.draw.circle(self.image, self.COR_BORDA, (r, r), r, 2)
+
+        # Rect centrado em (x, y) — facilita o posicionamento no level design
+        self.rect = self.image.get_rect(center=(x, y))

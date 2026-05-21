@@ -21,4 +21,6 @@ WHITE      = (255, 255, 255)
 RED        = (220, 50,  50)
 GREEN      = (50,  200, 80)
 BLUE       = (50,  100, 220)
-SKY_BLUE   = (135, 206, 235)  # Cor de fundo padrão da cena
+SKY_BLUE   = (135, 206, 235)  # cor de fundo padrão da cena
+YELLOW     = (255, 220,  0)   # moedas e elementos dourados
+GOLD       = (255, 180,  0)   # borda/detalhe das moedas

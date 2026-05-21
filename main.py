@@ -5,7 +5,7 @@ import sys
 import pygame
 import config
 from player   import Player
-from sprites  import Plataforma
+from sprites  import Plataforma, Moeda
 from camera   import Camera
 
 
@@ -58,6 +58,66 @@ class Game:
             y=100,
         )
 
+        # --- Pontuação ------------------------------------------------
+        self.score = 0
+
+        # --- Moedas ---------------------------------------------------
+        # Cada moeda é posicionada pelo CENTRO (x, y).
+        # Convenção de level design: y = topo_da_plataforma - 30
+        # para a moeda flutuar visivelmente acima do bloco.
+        self.moedas = pygame.sprite.Group()
+
+        moedas_dados = [
+            # Início do mundo — tutorial implícito
+            ( 150,  370),  # acima da plataforma (100, 400)
+            ( 200,  370),
+            ( 250,  370),
+            # Degrau intermediário
+            ( 430,  290),  # acima de (380, 320)
+            ( 460,  290),
+            # Plataforma que desce
+            ( 640,  400),  # acima de (600, 430)
+            # Plataforma longa
+            ( 850,  320),  # acima de (800, 350)
+            ( 900,  320),
+            ( 950,  320),
+            # Subida — recompensa por alcançar plataforma alta
+            (1110,  230),  # acima de (1080, 260)
+            (1150,  230),
+            # Descida
+            (1360,  350),  # acima de (1300, 380)
+            # Plataforma pequena — desafiadora, recompensa maior
+            (1520,  270),  # acima de (1500, 300)
+            (1540,  270),
+            (1560,  270),
+            # Retorno ao nível médio
+            (1740,  400),  # acima de (1680, 430)
+            (1790,  400),
+            # Plataforma alta — prêmio por alcançar o topo
+            (2010,  220),  # acima de (1950, 250)
+            (2050,  220),
+            (2090,  220),
+            (2130,  220),
+            # Zigue-zague
+            (2260,  340),  # acima de (2200, 370)
+            (2300,  340),
+            # Subida acentuada
+            (2460,  250),  # acima de (2420, 280)
+            (2500,  250),
+            # Planície
+            (2650,  370),  # acima de (2600, 400)
+            (2700,  370),
+            (2730,  370),
+            # Penúltima
+            (2860,  290),  # acima de (2820, 320)
+            # Chegada — 3 moedas no bloco difícil final
+            (2910,  390),  # acima de (2900, 420)
+            (2930,  390),
+            (2950,  390),
+        ]
+        for cx, cy in moedas_dados:
+            self.moedas.add(Moeda(cx, cy))
+
     # ------------------------------------------------------------------
     # 1. EVENTOS
     # ------------------------------------------------------------------
@@ -76,6 +136,15 @@ class Game:
     # ------------------------------------------------------------------
     def update(self, dt: float):
         self.player.update(dt, self.plataformas)
+
+        # Colisão jogador ↔ moedas
+        # spritecollide retorna a lista de moedas tocadas neste frame.
+        # dokill=True remove cada moeda tocada dos seus grupos automaticamente
+        # — não é necessário chamar moeda.kill() manualmente.
+        coletadas = pygame.sprite.spritecollide(
+            self.player, self.moedas, dokill=True
+        )
+        self.score += len(coletadas) * 10   # +10 por moeda (usa Moeda.VALOR implicitamente)
 
         # A câmera sempre atualiza DEPOIS do jogador para ler a posição final.
         self.camera.update(self.player.rect)
@@ -101,14 +170,32 @@ class Game:
         rect_tela = self.camera.aplicar(self.player.rect)
         pygame.draw.rect(self.screen, self.player.COLOR, rect_tela)
 
-        # HUD simples: posição X no mundo (útil para depuração)
-        fonte = pygame.font.SysFont(None, 28)
-        hud = fonte.render(
-            f"X mundo: {int(self.player.x)}  |  offset: {int(self.camera.offset_x)}",
+        # Moedas — mesmo padrão das plataformas: blit com offset da câmera
+        for moeda in self.moedas:
+            self.screen.blit(moeda.image, self.camera.aplicar(moeda.rect))
+
+        # --- HUD ------------------------------------------------------
+        # Criamos a fonte uma vez por frame. Para produção, mova para __init__.
+        fonte      = pygame.font.SysFont(None, 30)
+        fonte_score = pygame.font.SysFont(None, 36)
+
+        # Linha de debug (cinza claro, canto superior esquerdo)
+        debug = fonte.render(
+            f"X: {int(self.player.x)}  offset: {int(self.camera.offset_x)}"
+            f"  moedas: {len(self.moedas)}",
             True,
             config.BLACK,
         )
-        self.screen.blit(hud, (10, 10))
+        self.screen.blit(debug, (10, 10))
+
+        # Score em destaque (canto superior direito)
+        score_surf = fonte_score.render(f"Score: {self.score}", True, config.YELLOW)
+        # Alinha pela borda direita com margem de 10px
+        score_rect = score_surf.get_rect(topright=(config.SCREEN_WIDTH - 10, 10))
+        # Sombra para legibilidade sobre o céu
+        sombra = fonte_score.render(f"Score: {self.score}", True, config.BLACK)
+        self.screen.blit(sombra, score_rect.move(2, 2))
+        self.screen.blit(score_surf, score_rect)
 
         pygame.display.flip()
 
