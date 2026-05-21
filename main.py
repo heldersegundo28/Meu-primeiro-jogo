@@ -146,6 +146,63 @@ class Game:
         self._spawn_y: float = 100.0
 
     # ------------------------------------------------------------------
+    # COLISÃO COM INIMIGOS — pisão vs. toque lateral/frontal
+    # ------------------------------------------------------------------
+    def _checar_colisao_inimigos(self):
+        """
+        Distingue duas situações para cada inimigo tocado neste frame:
+
+        ① PISÃO (stomp) — jogador elimina o inimigo
+           Condições simultâneas:
+             a) vel_y > 0          → jogador está caindo (não subindo)
+             b) player.rect.bottom ≤ inimigo.rect.centery
+                                   → a base do jogador ainda está acima
+                                      da linha média do inimigo
+           Resultado: inimigo.kill(), +50 pontos, impulso vertical.
+
+        ② TOQUE LATERAL / POR BAIXO — inimigo elimina o jogador
+           Qualquer colisão que não satisfaça as condições acima.
+           Resultado: respawn.
+
+        Por que 'rect.centery' como limiar e não 'rect.top'?
+        ──────────────────────────────────────────────────────
+        Usar rect.top seria muito restritivo: o jogador precisaria
+        pousar no pixel exato do topo, o que em 60 FPS pode ser
+        facilmente "pulado" em um único frame rápido.
+        Usar rect.centery dá uma janela de tolerância de metade da
+        altura do inimigo, tornando o pisão confiável sem parecer
+        injusto — é a mesma técnica usada no Super Mario Bros.
+        """
+
+        # dokill=False porque decidimos aqui se mata, não o Pygame
+        colididos = pygame.sprite.spritecollide(
+            self.player, self.inimigos, dokill=False
+        )
+        if not colididos:
+            return
+
+        p = self.player
+        pisou_algum = False
+
+        for inimigo in colididos:
+            caindo          = p.vel_y > 0
+            base_acima_meio = p.rect.bottom <= inimigo.rect.centery
+
+            if caindo and base_acima_meio:
+                # ── Pisão confirmado ──────────────────────────────────
+                inimigo.kill()                      # remove de todos os grupos
+                self.score += 50                    # bônus de eliminação
+                p.vel_y     = -350.0                # impulso: mini-pulo pós-pisão
+                p.no_chao   = False                 # permite encadear pulos
+                pisou_algum = True
+            # else: colisão lateral/inferior — tratado após o loop
+
+        # Se houve ao menos um pisão, não aplicamos o respawn —
+        # o jogador pode ter acertado dois inimigos no mesmo frame.
+        if not pisou_algum:
+            self._respawn()
+
+    # ------------------------------------------------------------------
     # RESPAWN
     # ------------------------------------------------------------------
     def _respawn(self):
@@ -211,10 +268,8 @@ class Game:
         )
         self.score += len(coletadas) * 10   # +10 por moeda (usa Moeda.VALOR implicitamente)
 
-        # Colisão jogador ↔ inimigos → respawn
-        # dokill=False: o inimigo NÃO morre — ele continua patrulhando.
-        if pygame.sprite.spritecollide(self.player, self.inimigos, dokill=False):
-            self._respawn()
+        # Colisão jogador ↔ inimigos — dois desfechos possíveis
+        self._checar_colisao_inimigos()
 
         # A câmera sempre atualiza DEPOIS do jogador para ler a posição final.
         self.camera.update(self.player.rect)
