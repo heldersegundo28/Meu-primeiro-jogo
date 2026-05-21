@@ -108,8 +108,8 @@ class Player:
             self.vel_y = 0.0
             self.y = float(self.rect.y)
 
-        # ── Passo 3: limites horizontais da tela ─────────────────────
-        self.x = max(0.0, min(float(self.rect.x), config.SCREEN_WIDTH - self.WIDTH))
+        # ── Passo 3: limites horizontais do MUNDO (não da tela) ──────
+        self.x = max(0.0, min(float(self.rect.x), config.WORLD_WIDTH - self.WIDTH))
         self.rect.x = int(self.x)
 
     # ------------------------------------------------------------------

@@ -3,9 +3,14 @@
 # Alterar um valor aqui reflete em todo o projeto automaticamente.
 
 # --- Tela ---
-SCREEN_WIDTH = 800
+SCREEN_WIDTH  = 800
 SCREEN_HEIGHT = 600
-TITLE = "Meu Jogo de Plataforma 2D"
+TITLE         = "Meu Jogo de Plataforma 2D"
+
+# --- Mundo ---
+# Largura total do nível em pixels. A câmera desliza dentro desse espaço.
+# WORLD_WIDTH deve ser >= SCREEN_WIDTH (senão não há o que rolar).
+WORLD_WIDTH = 3000
 
 # --- Taxa de Quadros ---
 FPS = 60  # O game loop tentará rodar exatamente 60 vezes por segundo

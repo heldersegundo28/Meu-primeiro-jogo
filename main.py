@@ -4,8 +4,9 @@
 import sys
 import pygame
 import config
-from player import Player
-from sprites import Plataforma
+from player   import Player
+from sprites  import Plataforma
+from camera   import Camera
 
 
 class Game:
@@ -19,101 +20,104 @@ class Game:
         )
         pygame.display.set_caption(config.TITLE)
 
-        # Clock controla o FPS e fornece o delta time (dt)
-        self.clock = pygame.time.Clock()
+        self.clock   = pygame.time.Clock()
         self.running = True
 
-        # --- Plataformas -----------------------------------------------
-        # pygame.sprite.Group agrupa sprites para desenho e colisão em lote.
+        # --- Câmera ---------------------------------------------------
+        self.camera = Camera()
+
+        # --- Plataformas ----------------------------------------------
+        # O nível se estende por WORLD_WIDTH (3000px).
+        # Coordenadas são de mundo — a câmera cuida do ajuste na tela.
         self.plataformas = pygame.sprite.Group()
 
         plataformas_dados = [
-            # (x,   y,   largura, altura)  — descrição
-            (  0,  540,  800,     20),   # chão — cobre toda a largura
-            (100,  400,  180,     18),   # plataforma flutuante esquerda
-            (480,  300,  150,     18),   # plataforma flutuante direita
+            # (  x,    y,  largura, altura)   descrição
+            (    0,  540,   3000,     20),  # chão contínuo ao longo de todo o mundo
+            (  100,  400,    180,     18),  # plataforma baixa — início
+            (  380,  320,    150,     18),  # degrau intermediário
+            (  600,  430,    120,     18),  # desce um pouco
+            (  800,  350,    200,     18),  # longa após o primeiro gap
+            ( 1080,  260,    140,     18),  # subida
+            ( 1300,  380,    160,     18),  # descida
+            ( 1500,  300,    100,     18),  # plataforma pequena (desafiadora)
+            ( 1680,  430,    180,     18),  # retorno ao nível médio
+            ( 1950,  250,    200,     18),  # plataforma alta
+            ( 2200,  370,    150,     18),  # zigue-zague
+            ( 2420,  280,    120,     18),  # subida acentuada
+            ( 2600,  400,    180,     18),  # planície
+            ( 2820,  320,    160,     18),  # penúltima
+            ( 2900,  420,     80,     18),  # chegada — pequena e difícil
         ]
         for x, y, w, h in plataformas_dados:
             self.plataformas.add(Plataforma(x, y, w, h))
 
-        # --- Jogador ---------------------------------------------------
-        # Começa no topo da tela, cai e pousa no chão ao iniciar
+        # --- Jogador --------------------------------------------------
         self.player = Player(
             x=config.SCREEN_WIDTH // 2 - 20,
             y=100,
         )
 
     # ------------------------------------------------------------------
-    # 1. EVENTOS — "O que o jogador quer fazer?"
+    # 1. EVENTOS
     # ------------------------------------------------------------------
     def handle_events(self):
-        """
-        Lê e processa todos os eventos gerados pelo sistema operacional
-        e pelo jogador (teclado, mouse, fechar janela, etc.).
-        Deve ser chamado uma vez por frame, antes de qualquer atualização.
-        """
         for event in pygame.event.get():
-            if event.type == pygame.QUIT:          # Botão [X] da janela
+            if event.type == pygame.QUIT:
                 self.running = False
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:   # ESC também encerra
+                if event.key == pygame.K_ESCAPE:
                     self.running = False
 
-            # Repassa o evento ao jogador (ele filtra o que lhe interessa)
             self.player.handle_jump(event)
 
     # ------------------------------------------------------------------
-    # 2. ATUALIZAÇÃO — "O que muda no mundo a cada frame?"
+    # 2. ATUALIZAÇÃO
     # ------------------------------------------------------------------
-    def update(self, dt):
-        """
-        Avança a lógica do jogo em um passo de tempo (dt = delta time).
-        Aqui ficará: física, colisões, IA, animações, pontuação, etc.
-
-        Parâmetro dt (segundos desde o último frame) torna o movimento
-        independente do FPS — ex.: velocidade * dt = pixels/segundo reais.
-        """
+    def update(self, dt: float):
         self.player.update(dt, self.plataformas)
 
+        # A câmera sempre atualiza DEPOIS do jogador para ler a posição final.
+        self.camera.update(self.player.rect)
+
     # ------------------------------------------------------------------
-    # 3. RENDERIZAÇÃO — "O que o jogador vai ver?"
+    # 3. RENDERIZAÇÃO
     # ------------------------------------------------------------------
     def draw(self):
-        """
-        Desenha o estado atual do jogo na tela.
-        Ordem importa: o que for desenhado por último fica na frente.
-
-        Padrão obrigatório:
-          1. Limpa a tela (fill)       ← apaga o frame anterior
-          2. Desenha todos os objetos
-          3. Inverte os buffers (flip) ← exibe o frame concluído
-        """
-        # 3a. Limpa o frame anterior com a cor de fundo
         self.screen.fill(config.SKY_BLUE)
 
-        # 3b. Desenha os objetos do jogo (ordem = profundidade: fundo → frente)
+        # Plataformas — desenhamos manualmente para aplicar o offset da câmera.
+        # Group.draw() não permite ajuste de posição, por isso iteramos.
+        #
+        # Por que não usar Group.draw() aqui?
+        # ─────────────────────────────────────
+        # Group.draw() usa sprite.rect diretamente — que está em coordenadas
+        # de mundo. Para aplicar o offset da câmera precisamos de um rect
+        # temporário ajustado, o que exige o loop manual abaixo.
+        for plat in self.plataformas:
+            self.screen.blit(plat.image, self.camera.aplicar(plat.rect))
 
-        # Plataformas (Group.draw usa image+rect de cada sprite automaticamente)
-        self.plataformas.draw(self.screen)
+        # Jogador
+        rect_tela = self.camera.aplicar(self.player.rect)
+        pygame.draw.rect(self.screen, self.player.COLOR, rect_tela)
 
-        self.player.draw(self.screen)
+        # HUD simples: posição X no mundo (útil para depuração)
+        fonte = pygame.font.SysFont(None, 28)
+        hud = fonte.render(
+            f"X mundo: {int(self.player.x)}  |  offset: {int(self.camera.offset_x)}",
+            True,
+            config.BLACK,
+        )
+        self.screen.blit(hud, (10, 10))
 
-        # 3c. Envia o buffer preparado para o monitor (double buffering)
         pygame.display.flip()
 
     # ------------------------------------------------------------------
     # GAME LOOP
     # ------------------------------------------------------------------
     def run(self):
-        """
-        Loop principal: roda indefinidamente até self.running = False.
-        Sequência garantida a cada frame:
-            eventos → atualização → renderização
-        """
         while self.running:
-            # clock.tick(FPS) dorme o tempo necessário para manter o FPS
-            # alvo e retorna os milissegundos desde o último frame.
-            dt = self.clock.tick(config.FPS) / 1000.0  # converte para segundos
+            dt = self.clock.tick(config.FPS) / 1000.0
 
             self.handle_events()
             self.update(dt)
@@ -122,7 +126,6 @@ class Game:
         self.quit()
 
     def quit(self):
-        """Encerra o Pygame e fecha o processo de forma limpa."""
         pygame.quit()
         sys.exit()
 
