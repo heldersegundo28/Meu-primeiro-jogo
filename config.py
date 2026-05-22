@@ -12,6 +12,10 @@ TITLE         = "Meu Jogo de Plataforma 2D"
 # WORLD_WIDTH deve ser >= SCREEN_WIDTH (senão não há o que rolar).
 WORLD_WIDTH = 3000
 
+# Tamanho de um tile em pixels (usado pelo carregador de fase)
+# Cada caractere em fase1.txt representa um quadrado de TILE_SIZE × TILE_SIZE px.
+TILE_SIZE = 40
+
 # --- Taxa de Quadros ---
 FPS = 60  # O game loop tentará rodar exatamente 60 vezes por segundo
 

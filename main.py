@@ -61,79 +61,149 @@ class Game:
         self._construir_nivel()
 
     # ------------------------------------------------------------------
-    def _construir_nivel(self):
+    def _construir_nivel(self, arquivo: str = "fase1.txt"):
         """
-        Cria (ou recria) todos os objetos do nível: câmera, plataformas,
-        jogador, moedas e inimigos.
-
-        Separado do __init__ para podermos chamar em 'resetar_jogo()'
-        sem recriar a janela — evita o flash visual de reinicializar
-        o display do Pygame.
+        Inicializa os grupos e delega a construção ao carregador de fase.
+        Separado do __init__ para permitir reset sem recriar a janela.
         """
         self.camera = Camera()
         self.score  = 0
 
-        # ── Plataformas ───────────────────────────────────────────────
         self.plataformas = pygame.sprite.Group()
-        for x, y, w, h in [
-            (    0,  540,  3000,  20),  # chão contínuo
-            (  100,  400,   180,  18),  # início
-            (  380,  320,   150,  18),
-            (  600,  430,   120,  18),
-            (  800,  350,   200,  18),  # longa — inimigos aqui
-            ( 1080,  260,   140,  18),
-            ( 1300,  380,   160,  18),
-            ( 1500,  300,   100,  18),  # pequena, desafiadora
-            ( 1680,  430,   180,  18),
-            ( 1950,  250,   200,  18),  # alta — inimigos aqui
-            ( 2200,  370,   150,  18),
-            ( 2420,  280,   120,  18),
-            ( 2600,  400,   180,  18),  # planície — inimigos aqui
-            ( 2820,  320,   160,  18),
-            ( 2900,  420,    80,  18),  # chegada
-        ]:
-            self.plataformas.add(Plataforma(x, y, w, h))
+        self.moedas      = pygame.sprite.Group()
+        self.inimigos    = pygame.sprite.Group()
 
-        # ── Jogador ───────────────────────────────────────────────────
-        self._spawn_x = float(config.SCREEN_WIDTH // 2 - 20)
-        self._spawn_y = 100.0
-        self.player   = Player(self._spawn_x, self._spawn_y)
+        # Spawn padrão — sobrescrito por 'P' no mapa
+        self._spawn_x: float = float(config.TILE_SIZE)
+        self._spawn_y: float = float(config.TILE_SIZE)
 
-        # ── Moedas ────────────────────────────────────────────────────
-        self.moedas = pygame.sprite.Group()
-        for cx, cy in [
-            ( 150, 370), ( 200, 370), ( 250, 370),
-            ( 430, 290), ( 460, 290),
-            ( 640, 400),
-            ( 850, 320), ( 900, 320), ( 950, 320),
-            (1110, 230), (1150, 230),
-            (1360, 350),
-            (1520, 270), (1540, 270), (1560, 270),
-            (1740, 400), (1790, 400),
-            (2010, 220), (2050, 220), (2090, 220), (2130, 220),
-            (2260, 340), (2300, 340),
-            (2460, 250), (2500, 250),
-            (2650, 370), (2700, 370), (2730, 370),
-            (2860, 290),
-            (2910, 390), (2930, 390), (2950, 390),
-        ]:
-            self.moedas.add(Moeda(cx, cy))
+        self._carregar_fase(arquivo)
 
-        # Guarda o total para a barra de progresso no HUD
+        # Player criado DEPOIS do carregamento para usar o spawn lido do mapa
+        self.player = Player(self._spawn_x, self._spawn_y)
+
+        # Total de moedas para a barra de progresso no HUD
         self._total_moedas = len(self.moedas)
 
-        # ── Inimigos ──────────────────────────────────────────────────
-        self.inimigos = pygame.sprite.Group()
-        for x, y, xmin, xmax, vel in [
-            (  810, 310,   800, 1000, 110),
-            (  860, 310,   800, 1000, 150),
-            ( 1960, 210,  1950, 2150, 130),
-            ( 2050, 210,  1950, 2150,  90),
-            ( 2610, 360,  2600, 2780, 120),
-            ( 1090, 220,  1080, 1220, 100),
-            ( 1690, 390,  1680, 1860, 140),
-        ]:
-            self.inimigos.add(Inimigo(x, y, xmin, xmax, vel))
+    # ------------------------------------------------------------------
+    def _carregar_fase(self, nome_arquivo: str):
+        """
+        Lê um arquivo de texto e popula os grupos de sprites.
+
+        Formato do arquivo
+        ──────────────────
+        Cada caractere é um tile de config.TILE_SIZE × config.TILE_SIZE px.
+        O índice de coluna 'col' e de linha 'lin' viram coordenadas de mundo:
+            mundo_x = col * TILE_SIZE
+            mundo_y = lin * TILE_SIZE
+
+        Legenda de tiles
+        ──────────────────
+          '.'  espaço vazio (céu) — ignorado
+          '#'  plataforma sólida
+          'M'  moeda (centralizada no tile)
+          'E'  inimigo patrulheiro
+          'P'  spawn do jogador — não cria sprite, só guarda posição
+
+        Patrulha dos inimigos
+        ──────────────────────
+        Para definir os limites de patrulha automaticamente, o método
+        escaneia horizontalmente a partir da coluna do inimigo e procura
+        até onde há plataforma sólida na linha imediatamente abaixo.
+        Se não encontrar, usa ±3 tiles como fallback seguro.
+
+        Erros de arquivo
+        ──────────────────
+        Se o arquivo não existir, imprime aviso e retorna sem travar o jogo.
+        """
+        T = config.TILE_SIZE
+
+        try:
+            with open(nome_arquivo, encoding="utf-8") as f:
+                linhas = [linha.rstrip("\n") for linha in f.readlines()]
+        except FileNotFoundError:
+            print(f"[ERRO] Arquivo de fase não encontrado: '{nome_arquivo}'")
+            return
+
+        # Grid como lista de strings para consultar tiles vizinhos
+        grid = linhas
+        num_colunas = max(len(l) for l in grid) if grid else 0
+
+        for lin, linha in enumerate(grid):
+            for col, tile in enumerate(linha):
+
+                mundo_x = col * T
+                mundo_y = lin * T
+
+                # ── Plataforma ────────────────────────────────────────
+                if tile == "#":
+                    self.plataformas.add(
+                        Plataforma(mundo_x, mundo_y, T, T)
+                    )
+
+                # ── Moeda ─────────────────────────────────────────────
+                elif tile == "M":
+                    # Centraliza a moeda no tile
+                    self.moedas.add(Moeda(mundo_x + T // 2, mundo_y + T // 2))
+
+                # ── Inimigo ───────────────────────────────────────────
+                elif tile == "E":
+                    x_min, x_max = self._limites_patrulha(
+                        grid, lin, col, num_colunas
+                    )
+                    self.inimigos.add(
+                        Inimigo(mundo_x, mundo_y, x_min, x_max, velocidade=110.0)
+                    )
+
+                # ── Spawn do jogador ──────────────────────────────────
+                elif tile == "P":
+                    self._spawn_x = float(mundo_x)
+                    self._spawn_y = float(mundo_y)
+
+    # ------------------------------------------------------------------
+    def _limites_patrulha(
+        self,
+        grid: list,
+        lin_inimigo: int,
+        col_inimigo: int,
+        num_colunas: int,
+    ) -> tuple:
+        """
+        Calcula x_min e x_max de patrulha para um inimigo.
+
+        Varre para a esquerda e direita enquanto houver tile '#' na linha
+        diretamente abaixo do inimigo (lin_inimigo + 1). Para no primeiro
+        buraco ou na borda do mapa.
+
+        Retorna (x_min, x_max) em pixels de mundo.
+        """
+        T        = config.TILE_SIZE
+        lin_chao = lin_inimigo + 1
+
+        def tem_chao(col: int) -> bool:
+            if col < 0 or col >= num_colunas:
+                return False
+            if lin_chao >= len(grid):
+                return False
+            linha = grid[lin_chao]
+            return col < len(linha) and linha[col] == "#"
+
+        # Varre esquerda
+        col_esq = col_inimigo
+        while col_esq > 0 and tem_chao(col_esq - 1):
+            col_esq -= 1
+
+        # Varre direita
+        col_dir = col_inimigo
+        while col_dir < num_colunas - 1 and tem_chao(col_dir + 1):
+            col_dir += 1
+
+        # Fallback: sem chão detectado → ±3 tiles
+        if col_esq == col_inimigo and col_dir == col_inimigo:
+            col_esq = max(0,               col_inimigo - 3)
+            col_dir = min(num_colunas - 1, col_inimigo + 3)
+
+        return col_esq * T, (col_dir + 1) * T
 
     # ------------------------------------------------------------------
     def _resetar_jogo(self):
