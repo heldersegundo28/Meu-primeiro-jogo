@@ -321,7 +321,7 @@ class Game:
             self.screen.blit(inimigo.image, self.camera.aplicar(inimigo.rect))
 
         rect_tela = self.camera.aplicar(self.player.rect)
-        pygame.draw.rect(self.screen, self.player.COLOR, rect_tela)
+        self.player.draw(self.screen, rect_tela)
 
     def _draw_hud(self):
         """HUD em jogo: score (canto superior direito) + debug (canto esquerdo)."""
@@ -355,7 +355,9 @@ class Game:
 
         # Linha de debug (canto superior esquerdo)
         debug = self.fonte_hud.render(
-            f"X: {int(self.player.x)}  inimigos: {len(self.inimigos)}",
+            f"X: {int(self.player.x)}  "
+            f"anim: {self.player.estado_animacao}[{self.player.frame_atual}]  "
+            f"inimigos: {len(self.inimigos)}",
             True, config.BLACK,
         )
         self.screen.blit(debug, (10, 10))
