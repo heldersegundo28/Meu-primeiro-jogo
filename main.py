@@ -66,7 +66,7 @@ class Game:
         self._construir_nivel()
 
         # Música do menu toca ao abrir o jogo
-        self._tocar_musica("audio/musica_menu.ogg", volume=0.40)
+        self._tocar_musica(config.MUSICA_MENU, volume=0.40)
 
     # ══════════════════════════════════════════════════════════════════
     # ÁUDIO
@@ -108,12 +108,12 @@ class Game:
                 return None
 
         self.sons: dict = {
-            # Chave          Arquivo                        Volume
-            "pulo":   _carregar("audio/sfx_pulo.wav",   0.35),
-            "moeda":  _carregar("audio/sfx_moeda.wav",  0.45),
-            "morte":  _carregar("audio/sfx_morte.wav",  0.55),
-            "stomp":  _carregar("audio/sfx_stomp.wav",  0.50),
-            "vitoria":_carregar("audio/sfx_vitoria.wav",0.60),
+            # Chave          Arquivo                  Volume
+            "pulo":    _carregar(config.SFX_PULO,    0.35),
+            "moeda":   _carregar(config.SFX_MOEDA,   0.45),
+            "morte":   _carregar(config.SFX_MORTE,   0.55),
+            "stomp":   _carregar(config.SFX_STOMP,   0.50),
+            "vitoria": _carregar(config.SFX_VITORIA, 0.60),
         }
 
     def _tocar_som(self, chave: str):
@@ -156,7 +156,7 @@ class Game:
         self._musica_atual = ""
 
     # ------------------------------------------------------------------
-    def _construir_nivel(self, arquivo: str = "fase1.txt"):
+    def _construir_nivel(self, arquivo: str = config.FASE_1):
         """
         Inicializa os grupos e delega a construção ao carregador de fase.
         Separado do __init__ para permitir reset sem recriar a janela.
@@ -365,7 +365,7 @@ class Game:
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_SPACE:
                         self._resetar_jogo()
-                        self._tocar_musica("audio/musica_fase.ogg", volume=0.35)
+                        self._tocar_musica(config.MUSICA_FASE, volume=0.35)
 
             # ── JOGANDO ───────────────────────────────────────────────
             elif self.estado == "JOGANDO":
@@ -376,22 +376,22 @@ class Game:
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_r:
                         self._resetar_jogo()
-                        self._tocar_musica("audio/musica_fase.ogg", volume=0.35)
+                        self._tocar_musica(config.MUSICA_FASE, volume=0.35)
                     elif event.key == pygame.K_m:
                         self._parar_musica()
                         self.estado = "MENU"
-                        self._tocar_musica("audio/musica_menu.ogg", volume=0.40)
+                        self._tocar_musica(config.MUSICA_MENU, volume=0.40)
 
             # ── VITÓRIA ───────────────────────────────────────────────
             elif self.estado == "VITORIA":
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_r:
                         self._resetar_jogo()
-                        self._tocar_musica("audio/musica_fase.ogg", volume=0.35)
+                        self._tocar_musica(config.MUSICA_FASE, volume=0.35)
                     elif event.key == pygame.K_m:
                         self._parar_musica()
                         self.estado = "MENU"
-                        self._tocar_musica("audio/musica_menu.ogg", volume=0.40)
+                        self._tocar_musica(config.MUSICA_MENU, volume=0.40)
 
     # ══════════════════════════════════════════════════════════════════
     # 2. ATUALIZAÇÃO — só roda lógica quando estado == "JOGANDO"
