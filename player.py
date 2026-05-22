@@ -1,154 +1,333 @@
-# player.py
-# Define o jogador: física, input, colisões e animação procedural.
-#
-# Arquitetura de animação (sem arquivos externos)
-# ─────────────────────────────────────────────────────────────────────
-# Um sistema de animação real com spritesheets funciona assim:
-#
-#   1. estado_animacao  → QUAL sequência de frames tocar ("correndo", etc.)
-#   2. frame_atual      → QUAL frame da sequência mostrar agora (0, 1, 2…)
-#   3. tempo_animacao   → cronômetro que decide quando avançar o frame
-#
-# Aqui implementamos exatamente essa estrutura, mas em vez de trocar
-# imagens, mudamos como o retângulo é desenhado — deixando a lógica
-# de animação 100% funcional e pronta para receber sprites reais
-# substituindo apenas o método draw().
+"""
+player.py
+═════════
+Entidade principal do jogo — física, input, colisão e animação.
 
-import math
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FÍSICA COM DELTA TIME (dt-physics)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Toda grandeza de movimento usa a Integração de Euler semi-implícita:
+
+    vel  +=  aceleração × dt          →  velocidade em px/s
+    pos  +=  vel        × dt          →  posição   em px
+
+Multiplicar por dt garante que o personagem percorre a mesma distância
+por segundo a 30, 60 ou 120 FPS. Sem dt, a velocidade seria proporcional
+ao frame rate — o jogo ficaria mais rápido em máquinas mais potentes.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COLISÃO AABB POR EIXO SEPARADO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+AABB = Axis-Aligned Bounding Box. Dois AABB colidem quando se
+sobrepõem simultaneamente nos dois eixos.
+
+O problema de resolver os dois eixos juntos
+─────────────────────────────────────────────
+Se movermos X e Y ao mesmo tempo antes de resolver a colisão, perdemos
+a informação de QUAL eixo causou o contato:
+
+    jogador se move → sobrepõe plataforma → "colidiu, mas de onde?"
+
+Sem saber a direção, o engine pode empurrar o jogador na direção errada
+— o bug clássico onde o personagem "gruda" nas paredes ao pular rente
+a elas (wall-sticking).
+
+A solução: separação de eixos
+──────────────────────────────
+    1. Move  só em X  →  detecta colisão  →  corrige X  (colisão lateral)
+    2. Move  só em Y  →  detecta colisão  →  corrige Y  (pouso / teto)
+
+Agora cada colisão tem direção inequívoca:
+  Colisão no passo 1 → vem do lado   → empurra horizontalmente
+  Colisão no passo 2 → vem de cima/baixo → empurra verticalmente
+
+Prevenção de jitter (tremor)
+─────────────────────────────
+Jitter ocorre quando o solver oscila entre "dentro" e "fora" da
+superfície a cada frame. A causa mais comum: após resolver a colisão,
+o float acumulado (self.x / self.y) discorda do int do rect — e na
+próxima frame o sprite "remerge" parcialmente na plataforma.
+
+Solução aplicada aqui: após cada correção de rect, re-sincronizamos
+IMEDIATAMENTE o float a partir do rect corrigido (e não o contrário):
+
+    self.rect.bottom = plat.rect.top        # 1. rect corrigido (int)
+    self.y = float(self.rect.y)             # 2. float sincronizado ← rect
+
+Isso garante que a próxima frame começa a integração exatamente na
+borda da plataforma, sem acúmulo de erro.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÁQUINA DE ESTADOS DE ANIMAÇÃO
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A animação é gerenciada por três variáveis independentes:
+
+    estado_animacao   →  QUAL sequência tocar  ("parado"|"correndo"|"pulando")
+    frame_atual       →  QUAL frame da sequência exibir agora  (0…N-1)
+    tempo_animacao    →  cronômetro que decide QUANDO avançar o frame
+
+Camada 1 — _atualizar_estado_animacao()
+  Lê as variáveis de física (no_chao, vel_x) e determina o estado.
+  Ao trocar de estado, reinicia frame e cronômetro — o personagem
+  nunca "entra no meio" de uma animação.
+
+Camada 2 — _atualizar_frames(dt)
+  Acumula dt no cronômetro. Quando ultrapassa _INTERVALO, avança
+  frame_atual com módulo. Usa -= em vez de = 0 para preservar o
+  "troco" de tempo — mantém o ritmo correto mesmo com lag spikes.
+
+Camada 3 — draw() / _draw_*()
+  Renderiza o estado atual. HOJE usa primitivas geométricas.
+  FUTURO: basta trocar por:
+
+      atlas = {"parado": [s0], "correndo": [s0,s1,s2,s3], "pulando": [s0]}
+      img = atlas[self.estado_animacao][self.frame_atual]
+      if not self.virado_direita:
+          img = pygame.transform.flip(img, True, False)
+      surface.blit(img, rect_tela)
+
+  As camadas 1 e 2 não mudam nada — são independentes da renderização.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FLAG DE EVENTO DE UM FRAME (pulou)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Player não conhece o sistema de áudio. Quando o pulo é aplicado,
+self.pulou = True sinaliza ao Game que "algo aconteceu neste frame".
+O Game lê a flag, toca o som e a zera — sem acoplamento bidirecional.
+Esse padrão é chamado de "One-Frame Event Flag" e é usado em engines
+como Unity (Input.GetButtonDown retorna true por exatamente 1 frame).
+"""
+
+from __future__ import annotations
+
 import pygame
 import config
 
 
 class Player:
     """
-    Responsabilidades:
-      - Física (gravidade, pulo, dt-based)
-      - Input do teclado
-      - Colisão AABB por eixo com plataformas
-      - Máquina de estados de animação
-      - Renderização procedural (prontos para sprites)
+    Entidade controlada pelo jogador.
+
+    Responsabilidades
+    ─────────────────
+    • Física:     gravidade, aceleração e integração com delta time
+    • Input:      teclado (movimento, direção do sprite)
+    • Colisão:    AABB por eixo separado com grupo de plataformas
+    • Animação:   máquina de estados com cronômetro de frames
+    • Renderização: procedural (pronta para receber spritesheets)
+
+    Invariante central
+    ───────────────────
+    self.x / self.y  são os floats autoritativos da posição.
+    self.rect        é derivado deles (int truncado).
+    Após qualquer correção de rect pela colisão, os floats são
+    re-sincronizados IMEDIATAMENTE para evitar jitter.
     """
 
-    # ── Dimensões ────────────────────────────────────────────────────
-    WIDTH  = 40
-    HEIGHT = 60
+    # ── Dimensões ─────────────────────────────────────────────────────
+    WIDTH:  int = 40
+    HEIGHT: int = 60
 
-    # ── Física ───────────────────────────────────────────────────────
-    SPEED      = 250.0    # pixels/segundo
-    GRAVITY    = 1200.0   # pixels/segundo²
-    FORCA_PULO = -550.0   # pixels/segundo (negativo = para cima)
+    # ── Física (lidas de config para facilitar tuning centralizado) ───
+    SPEED:      float = config.PLAYER_SPEED
+    GRAVITY:    float = config.PLAYER_GRAVITY
+    FORCA_PULO: float = config.PLAYER_JUMP_FORCE
 
-    # ── Animação ─────────────────────────────────────────────────────
-    TOTAL_FRAMES    = 4      # frames na sequência de corrida: 0, 1, 2, 3
-    FPS_CORRIDA     = 10.0   # frames de animação por segundo ao correr
-    # Intervalo em segundos entre troca de frame  = 1 / FPS_CORRIDA
-    _INTERVALO      = 1.0 / FPS_CORRIDA
+    # ── Animação ──────────────────────────────────────────────────────
+    TOTAL_FRAMES: int   = 4      # frames no ciclo de corrida: 0 → 3
+    FPS_CORRIDA:  float = 10.0   # trocas de frame por segundo
+    _INTERVALO:   float = 1.0 / FPS_CORRIDA   # segundos por frame
 
-    # ── Paleta procedural ────────────────────────────────────────────
-    # Cores base para cada estado — variam ligeiramente entre frames
-    _COR_PARADO  = config.RED
-    _COR_CORRENDO = (200, 60, 60)   # vermelho levemente diferente
-    _COR_PULANDO  = (255, 80, 80)   # mais claro — sensação de leveza
+    # ── Paleta procedural — uma cor por estado ─────────────────────────
+    _COR_PARADO:   tuple = config.RED
+    _COR_CORRENDO: tuple = (200, 60, 60)    # vermelho mais escuro — esforço
+    _COR_PULANDO:  tuple = (255, 80, 80)    # vermelho claro — leveza
 
-    # ─────────────────────────────────────────────────────────────────
-    def __init__(self, x: float, y: float):
-        # ── Posição e física ─────────────────────────────────────────
+    # ──────────────────────────────────────────────────────────────────
+    def __init__(self, x: float, y: float) -> None:
+        """
+        Parâmetros
+        ──────────
+        x, y : posição inicial do canto superior-esquerdo, em world-space.
+        """
+        # ── Posição (floats autoritativos) ────────────────────────────
         self.x: float = float(x)
         self.y: float = float(y)
+
+        # ── Velocidade (px/s) ─────────────────────────────────────────
         self.vel_x: float = 0.0
         self.vel_y: float = 0.0
-        self.no_chao: bool = False
-        self.rect = pygame.Rect(int(self.x), int(self.y), self.WIDTH, self.HEIGHT)
-        self._dt: float = 0.0          # guardado para _resolve_collisions
 
-        # ── Direção do sprite ────────────────────────────────────────
-        # True = virado para a direita; False = para a esquerda.
-        # Quando usarmos spritesheets, basta fazer flip da Surface aqui.
+        # ── Estado de chão — True apenas quando rect.bottom == plataforma
+        self.no_chao: bool = False
+
+        # ── Rect derivado — único ponto de interação com o Pygame ─────
+        self.rect: pygame.Rect = pygame.Rect(
+            int(self.x), int(self.y), self.WIDTH, self.HEIGHT
+        )
+
+        # ── Direção do sprite ─────────────────────────────────────────
+        # True = virado para a direita.
+        # Com spritesheets: pygame.transform.flip(img, not virado_direita, False)
         self.virado_direita: bool = True
 
-        # ── Máquina de estados de animação ───────────────────────────
-        self.estado_animacao: str = "parado"   # "parado" | "correndo" | "pulando"
-        self.frame_atual:     int = 0          # 0 … TOTAL_FRAMES-1
-        self.tempo_animacao: float = 0.0       # cronômetro em segundos
+        # ── Máquina de estados de animação ────────────────────────────
+        self.estado_animacao: str  = "parado"   # "parado"|"correndo"|"pulando"
+        self.frame_atual:     int  = 0           # índice no ciclo de frames
+        self.tempo_animacao:  float = 0.0        # cronômetro em segundos
 
-        # ── Flag de pulo para o sistema de áudio ─────────────────────
-        # Levantada em handle_jump e lida (e zerada) pelo Game no update.
-        # Evita passar referência ao mixer para dentro do Player —
-        # o Player apenas sinaliza "algo aconteceu"; quem decide tocar
-        # o som é o Game. Padrão: Flag de Evento de Um Frame.
+        # ── Flag de evento de um frame (One-Frame Event Flag) ─────────
+        # Levantada em handle_jump; lida e zerada pelo Game.
+        # Desacopla o Player do sistema de áudio. Ver docstring do módulo.
         self.pulou: bool = False
 
     # ══════════════════════════════════════════════════════════════════
-    # FÍSICA
+    # INPUT  (métodos públicos chamados pelo Game)
     # ══════════════════════════════════════════════════════════════════
 
-    def _handle_input(self):
-        keys = pygame.key.get_pressed()
-        self.vel_x = 0.0
-        if keys[pygame.K_LEFT]  or keys[pygame.K_a]:
-            self.vel_x = -self.SPEED
-            self.virado_direita = False
-        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
-            self.vel_x = +self.SPEED
-            self.virado_direita = True
+    def handle_jump(self, event: pygame.event.Event) -> None:
+        """
+        Processa o evento de pulo — deve ser chamado dentro do loop de
+        eventos do Game, uma vez por evento recebido.
 
-    def handle_jump(self, event: pygame.event.Event):
-        """Chamado pelo Game para cada event — aplica pulo via KEYDOWN."""
+        Por que KEYDOWN e não get_pressed()?
+        ──────────────────────────────────────
+        get_pressed() retorna True durante TODOS os frames em que a
+        tecla está pressionada. Se o jogador segurar Espaço por 10 frames,
+        a força de pulo seria aplicada 10 vezes — o personagem voaria.
+
+        KEYDOWN dispara exatamente UMA VEZ por pressionamento — o impulso
+        é aplicado uma única vez, como esperado fisicamente.
+        """
         if event.type == pygame.KEYDOWN:
             if event.key in (pygame.K_SPACE, pygame.K_UP, pygame.K_w):
                 if self.no_chao:
                     self.vel_y   = self.FORCA_PULO
                     self.no_chao = False
-                    self.pulou   = True   # sinaliza ao Game para tocar o som
+                    self.pulou   = True    # sinaliza ao Game → tocar SFX
 
-    def _apply_gravity(self, dt: float):
+    # ══════════════════════════════════════════════════════════════════
+    # FÍSICA  (métodos privados)
+    # ══════════════════════════════════════════════════════════════════
+
+    def _handle_input(self) -> None:
+        """
+        Lê o estado contínuo do teclado e define vel_x.
+
+        Zerar vel_x antes de checar as teclas faz o personagem parar
+        imediatamente ao soltar a tecla — sem inércia, conforme o
+        comportamento esperado em plataformas arcade.
+        """
+        keys = pygame.key.get_pressed()
+        self.vel_x = 0.0
+
+        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+            self.vel_x          = -self.SPEED
+            self.virado_direita = False
+
+        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+            self.vel_x          = +self.SPEED
+            self.virado_direita = True
+
+    def _apply_gravity(self, dt: float) -> None:
+        """
+        Acumula gravidade em vel_y (positivo = para baixo).
+
+        Não há terminal velocity aqui intencionalmente — a gravidade
+        moderada (1 200 px/s²) e o WORLD_HEIGHT finito fazem com que
+        a velocidade de queda máxima seja naturalmente limitada pelo
+        tempo de queda disponível no nível.
+        """
         self.vel_y += self.GRAVITY * dt
 
-    def _resolve_collisions(self, plataformas: pygame.sprite.Group):
-        # ── Eixo X ───────────────────────────────────────────────────
-        self.x += self.vel_x * self._dt
+    def _resolve_collisions(self, plataformas: pygame.sprite.Group, dt: float) -> None:
+        """
+        Move o jogador e resolve colisões com o grupo de plataformas,
+        processando cada eixo de forma completamente independente.
+
+        Veja a docstring do módulo para a explicação completa do
+        algoritmo AABB por eixo separado e da prevenção de jitter.
+
+        Parâmetros
+        ──────────
+        plataformas : grupo de sprites com atributo .rect (world-space)
+        dt          : delta time em segundos
+        """
+        # ── EIXO X ────────────────────────────────────────────────────
+        # 1. Avança apenas em X
+        self.x     += self.vel_x * dt
         self.rect.x = int(self.x)
+
+        # 2. Detecta e resolve colisões laterais
         for plat in pygame.sprite.spritecollide(self, plataformas, False):
             if self.vel_x > 0:
+                # Movendo para a direita → encosta a face direita no lado esquerdo da plataforma
                 self.rect.right = plat.rect.left
             elif self.vel_x < 0:
+                # Movendo para a esquerda → encosta a face esquerda no lado direito da plataforma
                 self.rect.left  = plat.rect.right
-            self.x     = float(self.rect.x)
-            self.vel_x = 0.0
 
-        # ── Eixo Y ───────────────────────────────────────────────────
-        self.y += self.vel_y * self._dt
+            # Re-sincroniza float ← rect corrigido  (anti-jitter)
+            self.x     = float(self.rect.x)
+            self.vel_x = 0.0   # para o movimento horizontal ao colidir
+
+        # ── EIXO Y ────────────────────────────────────────────────────
+        # 3. Avança apenas em Y
+        self.y     += self.vel_y * dt
         self.rect.y = int(self.y)
+
+        # 4. Reseta no_chao antes de verificar — ele só é True se
+        #    uma colisão vertical acontecer NESTE frame.
         self.no_chao = False
+
+        # 5. Detecta e resolve colisões verticais
         for plat in pygame.sprite.spritecollide(self, plataformas, False):
             if self.vel_y > 0:
+                # Caindo → pousa no topo da plataforma
                 self.rect.bottom = plat.rect.top
                 self.no_chao     = True
             elif self.vel_y < 0:
+                # Subindo → bate a cabeça no fundo da plataforma
                 self.rect.top    = plat.rect.bottom
-            self.vel_y = 0.0
-            self.y     = float(self.rect.y)
 
-        # ── Limites do mundo ─────────────────────────────────────────
-        self.x = max(0.0, min(float(self.rect.x), config.WORLD_WIDTH - self.WIDTH))
+            # Re-sincroniza float ← rect corrigido  (anti-jitter)
+            self.y     = float(self.rect.y)
+            self.vel_y = 0.0   # zera vel_y em ambos os casos (pouso E teto)
+
+        # ── LIMITES DO MUNDO ──────────────────────────────────────────
+        # Impede que o jogador saia pelas bordas esquerda e direita.
+        # Não há limite vertical superior — o jogador pode sair pelo topo;
+        # não há limite inferior — cair fora da tela pode ser tratado
+        # como morte em Game.update() verificando player.rect.top > SCREEN_HEIGHT.
+        self.x      = max(0.0, min(self.x, float(config.WORLD_WIDTH - self.WIDTH)))
         self.rect.x = int(self.x)
 
     # ══════════════════════════════════════════════════════════════════
-    # ANIMAÇÃO
+    # ANIMAÇÃO  (métodos privados)
     # ══════════════════════════════════════════════════════════════════
 
-    def _atualizar_estado_animacao(self):
+    def _atualizar_estado_animacao(self) -> None:
         """
-        Determina QUAL sequência de animação deve estar tocando agora,
-        baseado nas variáveis de física.
+        Determina qual sequência de animação deve estar ativa,
+        baseado nas variáveis de física do frame atual.
 
-        Prioridade (ordem importa):
-          1. No ar  → "pulando"  (domina qualquer velocidade horizontal)
-          2. Movendo-se horizontalmente no chão → "correndo"
-          3. Parado no chão → "parado"
+        Ordem de prioridade (a ordem das condições importa):
+          1. No ar           → "pulando"   domina qualquer vel_x
+          2. No chão + mov.  → "correndo"
+          3. No chão + parado → "parado"
 
-        Quando usarmos spritesheets, este método determina qual
-        linha/strip do atlas de sprites será lida.
+        Transição de estado
+        ────────────────────
+        Ao detectar uma mudança de estado, reinicia frame_atual e
+        tempo_animacao. Isso evita que o personagem "entre no meio"
+        de uma animação — cada sequência sempre começa do frame 0.
+
+        Com spritesheets: este método determina qual row/strip do
+        atlas de sprites será indexada por frame_atual.
         """
         if not self.no_chao:
             novo = "pulando"
@@ -157,89 +336,110 @@ class Player:
         else:
             novo = "parado"
 
-        # Troca de estado: reinicia cronômetro e vai para frame 0
-        # para não "entrar no meio" de uma animação.
         if novo != self.estado_animacao:
             self.estado_animacao = novo
             self.frame_atual     = 0
             self.tempo_animacao  = 0.0
 
-    def _atualizar_frames(self, dt: float):
+    def _atualizar_frames(self, dt: float) -> None:
         """
-        Avança o frame_atual quando o cronômetro atinge o intervalo.
+        Avança frame_atual quando o cronômetro atinge _INTERVALO.
 
-        Só avança frames no estado "correndo" — parado e pulando
-        ficam fixos no frame 0 (pose neutra).
+        Só anima no estado "correndo" — parado e pulando ficam no
+        frame 0 (pose neutra).
 
-        Lógica do cronômetro
-        ────────────────────
-        tempo_animacao acumula dt a cada update.
-        Quando ultrapassa _INTERVALO (0.1 s para 10 FPS):
-          • desconta o intervalo (não zera — preserva o resto para
-            não "perder" tempo entre frames, mantendo o ritmo preciso)
-          • avança frame_atual em módulo TOTAL_FRAMES (0→1→2→3→0…)
+        Por que subtrair _INTERVALO em vez de zerar o cronômetro?
+        ────────────────────────────────────────────────────────────
+        Se um frame de lag demorar 0.18 s e _INTERVALO = 0.10 s, a
+        diferença de 0.08 s seria perdida ao zerar o cronômetro —
+        o ritmo da animação "escorregaria" imperceptivelmente.
+        Subtraindo, o excesso (0.08 s) é carregado para o próximo
+        intervalo, mantendo o timing preciso mesmo sob variação de FPS.
 
-        Esta mesma estrutura funciona identicamente com spritesheets:
-        basta usar frame_atual como índice na lista de Surfaces.
+        O while (em vez de if) cobre lag spikes extremos onde dois ou
+        mais frames de animação deveriam ter avançado no mesmo update.
         """
         if self.estado_animacao == "correndo":
             self.tempo_animacao += dt
             while self.tempo_animacao >= self._INTERVALO:
-                self.tempo_animacao -= self._INTERVALO          # preserva o resto
+                self.tempo_animacao -= self._INTERVALO
                 self.frame_atual = (self.frame_atual + 1) % self.TOTAL_FRAMES
         else:
-            # Parado ou pulando: pose neutra
+            # Estado estático: reinicia para pose neutra
             self.frame_atual    = 0
             self.tempo_animacao = 0.0
 
     # ══════════════════════════════════════════════════════════════════
-    # UPDATE PRINCIPAL
+    # UPDATE PRINCIPAL  (método público)
     # ══════════════════════════════════════════════════════════════════
 
-    def update(self, dt: float, plataformas: pygame.sprite.Group):
+    def update(self, dt: float, plataformas: pygame.sprite.Group) -> None:
         """
-        Ordem de operações por frame:
-          1. Input          → define intenção do jogador
-          2. Gravidade      → acumula vel_y
-          3. Colisões       → move e corrige posição
-          4. Sincroniza floats ← rect corrigido
-          5. Estado anim.   → decide qual sequência tocar
-          6. Frames         → avança o cronômetro/frame
-        """
-        self._dt = dt
+        Executa um passo lógico completo para este frame.
 
+        Ordem de operações — a sequência não pode ser alterada:
+        ──────────────────────────────────────────────────────
+        1. Input          define vel_x baseado nas teclas pressionadas
+        2. Gravidade      acumula vel_y (independente do input)
+        3. Colisões       move e corrige posição; atualiza no_chao
+        4. Sincronização  re-sincroniza floats ← rect final corrigido
+        5. Estado anim.   lê no_chao e vel_x para decidir a sequência
+        6. Frames anim.   avança o cronômetro e o índice de frame
+
+        Os passos 5 e 6 devem ser os últimos: dependem do estado
+        físico final do frame, não do estado antes das correções.
+
+        Parâmetros
+        ──────────
+        dt          : delta time em segundos (de Clock.tick / 1000)
+        plataformas : grupo de sprites de colisão (world-space)
+        """
         self._handle_input()
         self._apply_gravity(dt)
-        self._resolve_collisions(plataformas)
+        self._resolve_collisions(plataformas, dt)
 
+        # Re-sincronização final: garante que self.x/y refletem
+        # o rect após todas as correções de colisão e limites de mundo.
         self.x = float(self.rect.x)
         self.y = float(self.rect.y)
 
-        # Animação — sempre depois da física para ler o estado correto
+        # Animação — lida depois da física para ler o estado correto
         self._atualizar_estado_animacao()
         self._atualizar_frames(dt)
 
     # ══════════════════════════════════════════════════════════════════
-    # RENDERIZAÇÃO PROCEDURAL
+    # RENDERIZAÇÃO PROCEDURAL  (método público + helpers privados)
     # ══════════════════════════════════════════════════════════════════
     #
-    # Este método desenha o personagem com primitivas do Pygame
-    # reagindo a estado_animacao e frame_atual — exatamente como um
-    # sistema de sprites reais faria, trocando Surface em vez de cor.
+    # Estrutura de substituição por spritesheets (zero mudança na lógica):
     #
-    # Estrutura de substituição futura:
-    #   sprites = { "parado": [surf0], "correndo": [s0,s1,s2,s3], ... }
-    #   surface.blit(sprites[self.estado_animacao][self.frame_atual], rect_tela)
+    #   atlas = {
+    #       "parado":   [surf_idle_0],
+    #       "correndo": [surf_run_0, surf_run_1, surf_run_2, surf_run_3],
+    #       "pulando":  [surf_jump_0],
+    #   }
+    #   img = atlas[self.estado_animacao][self.frame_atual]
+    #   if not self.virado_direita:
+    #       img = pygame.transform.flip(img, True, False)
+    #   surface.blit(img, rect_tela)
     #
+    # self.virado_direita já está sendo mantido por _handle_input.
     # ══════════════════════════════════════════════════════════════════
 
-    def draw(self, surface: pygame.Surface, rect_tela: pygame.Rect = None):
+    def draw(
+        self,
+        surface: pygame.Surface,
+        rect_tela: pygame.Rect | None = None,
+    ) -> None:
         """
+        Renderiza o jogador no estado de animação atual.
+
         Parâmetros
-        ----------
-        surface   : Surface de destino (normalmente self.screen de Game)
-        rect_tela : Rect já com offset de câmera aplicado.
-                    Se None, usa self.rect (sem câmera — útil para testes).
+        ──────────
+        surface   : Surface de destino (normalmente Game.screen)
+        rect_tela : Rect em screen-space (com offset de câmera aplicado).
+                    Se None, usa self.rect diretamente — útil em testes
+                    unitários ou quando não há câmera.
         """
         r = rect_tela if rect_tela is not None else self.rect
 
@@ -251,123 +451,119 @@ class Player:
             self._draw_pulando(surface, r)
 
     # ------------------------------------------------------------------
-    # Poses por estado
+    # Helpers de renderização — um por estado de animação
     # ------------------------------------------------------------------
 
-    def _draw_parado(self, surface: pygame.Surface, r: pygame.Rect):
+    def _draw_olhos(self, surface: pygame.Surface, r: pygame.Rect) -> None:
         """
-        Pose neutra: corpo vermelho sólido + olhos brancos fixos.
-        frame_atual é sempre 0 neste estado — nenhuma animação roda.
+        Olhos brancos com pupila preta direcional.
+
+        Extraído como helper porque todos os três estados de animação
+        compartilham exatamente o mesmo visual de olhos — elimina
+        duplicação e centraliza qualquer ajuste futuro.
+
+        A pupila é deslocada +2px (dir.) ou -2px (esq.) para indicar
+        a direção que o personagem está olhando, usando Rect.move()
+        e Rect.inflate() para ajuste não-destrutivo.
         """
-        # Corpo
+        ow, oh = 7, 7            # dimensões de cada olho
+        oy     = r.top + 10      # Y dos olhos: terço superior do corpo
+        desl   = 2 if self.virado_direita else -2   # deslocamento da pupila
+
+        olho_esq = pygame.Rect(r.left  + 5,  oy, ow, oh)
+        olho_dir = pygame.Rect(r.right - 14, oy, ow, oh)
+
+        for olho in (olho_esq, olho_dir):
+            pygame.draw.rect(surface, config.WHITE, olho)
+            # inflate(-3, -3) reduz o rect em 3px em cada dimensão → pupila menor
+            pygame.draw.rect(surface, config.BLACK, olho.move(desl, 1).inflate(-3, -3))
+
+    def _draw_parado(self, surface: pygame.Surface, r: pygame.Rect) -> None:
+        """
+        Pose neutra: corpo vermelho sólido.
+        frame_atual é sempre 0 neste estado — nenhum ciclo de frames.
+        """
         pygame.draw.rect(surface, self._COR_PARADO, r)
+        self._draw_olhos(surface, r)
 
-        # Olhos: dois quadradinhos brancos no terço superior do corpo
-        ow, oh = 7, 7     # largura e altura de cada olho
-        oy = r.top + 10   # posição y dos olhos
-        if self.virado_direita:
-            olho_esq = pygame.Rect(r.left  + 5,  oy, ow, oh)
-            olho_dir = pygame.Rect(r.right - 14, oy, ow, oh)
-        else:
-            olho_esq = pygame.Rect(r.left  + 5,  oy, ow, oh)
-            olho_dir = pygame.Rect(r.right - 14, oy, ow, oh)
-
-        pygame.draw.rect(surface, config.WHITE, olho_esq)
-        pygame.draw.rect(surface, config.WHITE, olho_dir)
-
-        # Pupila: quadrado preto menor, deslocado para o lado que o jogador olha
-        desl = 2 if self.virado_direita else -2
-        pygame.draw.rect(surface, config.BLACK,
-                         olho_esq.move(desl, 1).inflate(-3, -3))
-        pygame.draw.rect(surface, config.BLACK,
-                         olho_dir.move(desl, 1).inflate(-3, -3))
-
-    def _draw_correndo(self, surface: pygame.Surface, r: pygame.Rect):
+    def _draw_correndo(self, surface: pygame.Surface, r: pygame.Rect) -> None:
         """
-        Animação de corrida: 4 frames que alternam a posição de duas
-        'pernas' (linhas) embaixo do corpo, simulando passadas.
+        Ciclo de corrida: 4 frames com pernas alternadas.
 
-        Mapa de frames → posição das pernas:
-          frame 0: perna esq baixa, perna dir alta    (passada A)
-          frame 1: ambas no meio                      (neutro)
-          frame 2: perna esq alta, perna dir baixa    (passada B)
-          frame 3: ambas no meio                      (neutro)
+        As pernas são linhas verticais saindo da base do corpo.
+        Cada frame desloca as pernas em Y de forma espelhada:
 
-        Este padrão de 4 frames é o mesmo usado em spritesheets de
-        personagens 2D clássicos (ciclo de caminhada).
+            frame 0 → perna esq. +8px  perna dir. -8px  (passada A)
+            frame 1 → ambas  0px                         (neutro)
+            frame 2 → perna esq. -8px  perna dir. +8px  (passada B)
+            frame 3 → ambas  0px                         (neutro)
+
+        Este ciclo de 4 frames (A–neutro–B–neutro) é o padrão de ciclo
+        de caminhada usado em spritesheets de plataformas 2D clássicos.
         """
-        # Corpo com tom ligeiramente diferente do estado parado
         pygame.draw.rect(surface, self._COR_CORRENDO, r)
+        self._draw_olhos(surface, r)
 
-        # Olhos (mesmos do estado parado para manter identidade visual)
-        self._draw_parado(surface, r)   # reutiliza olhos; corpo já foi desenhado
-
-        # Pernas — calculamos offset vertical para cada perna por frame
-        # Tabela:  frame → (offset_esq, offset_dir)  em pixels
-        offsets = {
-            0: ( 8, -8),   # passada A: esq baixa, dir alta
+        # Tabela de offsets verticais: frame → (delta_esq, delta_dir)
+        _OFFSETS_PERNAS: dict[int, tuple[int, int]] = {
+            0: ( 8, -8),   # passada A
             1: ( 0,  0),   # neutro
-            2: (-8,  8),   # passada B: esq alta,  dir baixa
+            2: (-8,  8),   # passada B
             3: ( 0,  0),   # neutro
         }
-        oe, od = offsets[self.frame_atual]
+        oe, od  = _OFFSETS_PERNAS[self.frame_atual]
+        cx      = r.centerx
+        base_y  = r.bottom
+        perna_h = 10       # comprimento base da perna em pixels
 
-        cx     = r.centerx
-        base_y = r.bottom         # linha base das pernas
-        perna_h = 10              # comprimento visual da perna
-
-        # Perna esquerda
         pygame.draw.line(
             surface, config.BLACK,
             (cx - 8, base_y),
-            (cx - 8, base_y + perna_h + oe),
-            3,
+            (cx - 8, base_y + perna_h + oe), 3,
         )
-        # Perna direita
         pygame.draw.line(
             surface, config.BLACK,
             (cx + 8, base_y),
-            (cx + 8, base_y + perna_h + od),
-            3,
+            (cx + 8, base_y + perna_h + od), 3,
         )
 
-    def _draw_pulando(self, surface: pygame.Surface, r: pygame.Rect):
+    def _draw_pulando(self, surface: pygame.Surface, r: pygame.Rect) -> None:
         """
-        Pose de pulo: corpo mais claro (leveza) + braços abertos +
-        pernas dobradas (linhas diagonais embaixo do corpo).
+        Pose de pulo: corpo claro + braços abertos + pernas dinâmicas.
 
-        Subindo (vel_y < 0): pernas recolhidas para cima.
-        Caindo  (vel_y > 0): pernas abertas para baixo — diferencia
-                              visualmente a fase de subida da descida.
+        As pernas mudam de posição baseadas em vel_y (não em frame_atual):
+          vel_y < 0  →  subindo:  pernas dobradas para CIMA  (recolhidas)
+          vel_y >= 0 →  caindo:   pernas abertas para BAIXO  (estendidas)
+
+        Esse detalhe diferencia visualmente a fase de subida da descida
+        sem custo adicional de animação — um truque comum em sprites 2D.
         """
-        # Corpo claro
         pygame.draw.rect(surface, self._COR_PULANDO, r)
-
-        # Olhos
-        self._draw_parado(surface, r)
+        self._draw_olhos(surface, r)
 
         cx = r.centerx
         cy = r.centery
 
-        # Braços — linha horizontal que cruza o corpo
-        pygame.draw.line(surface, config.BLACK,
-                         (r.left  - 6, cy - 5),
-                         (r.right + 6, cy - 5), 3)
+        # Braços: linha horizontal atravessando o corpo
+        pygame.draw.line(
+            surface, config.BLACK,
+            (r.left  - 6, cy - 5),
+            (r.right + 6, cy - 5), 3,
+        )
 
-        # Pernas: recolhidas subindo, abertas caindo
+        # Pernas: ângulo muda com a fase do pulo
         if self.vel_y < 0:
-            # Subindo — pernas dobradas para cima (linhas em V invertido)
-            pygame.draw.line(surface, config.BLACK,
-                             (cx - 8, r.bottom),
-                             (cx - 14, r.bottom - 10), 3)
-            pygame.draw.line(surface, config.BLACK,
-                             (cx + 8, r.bottom),
-                             (cx + 14, r.bottom - 10), 3)
+            # Subindo — pernas em V invertido (recolhidas)
+            extremos = [
+                ((cx - 8, r.bottom), (cx - 14, r.bottom - 10)),
+                ((cx + 8, r.bottom), (cx + 14, r.bottom - 10)),
+            ]
         else:
-            # Caindo — pernas abertas para baixo (linhas em V)
-            pygame.draw.line(surface, config.BLACK,
-                             (cx - 8, r.bottom),
-                             (cx - 14, r.bottom + 12), 3)
-            pygame.draw.line(surface, config.BLACK,
-                             (cx + 8, r.bottom),
-                             (cx + 14, r.bottom + 12), 3)
+            # Caindo — pernas em V (abertas)
+            extremos = [
+                ((cx - 8, r.bottom), (cx - 14, r.bottom + 12)),
+                ((cx + 8, r.bottom), (cx + 14, r.bottom + 12)),
+            ]
+
+        for inicio, fim in extremos:
+            pygame.draw.line(surface, config.BLACK, inicio, fim, 3)
