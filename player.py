@@ -71,6 +71,13 @@ class Player:
         self.frame_atual:     int = 0          # 0 … TOTAL_FRAMES-1
         self.tempo_animacao: float = 0.0       # cronômetro em segundos
 
+        # ── Flag de pulo para o sistema de áudio ─────────────────────
+        # Levantada em handle_jump e lida (e zerada) pelo Game no update.
+        # Evita passar referência ao mixer para dentro do Player —
+        # o Player apenas sinaliza "algo aconteceu"; quem decide tocar
+        # o som é o Game. Padrão: Flag de Evento de Um Frame.
+        self.pulou: bool = False
+
     # ══════════════════════════════════════════════════════════════════
     # FÍSICA
     # ══════════════════════════════════════════════════════════════════
@@ -92,6 +99,7 @@ class Player:
                 if self.no_chao:
                     self.vel_y   = self.FORCA_PULO
                     self.no_chao = False
+                    self.pulou   = True   # sinaliza ao Game para tocar o som
 
     def _apply_gravity(self, dt: float):
         self.vel_y += self.GRAVITY * dt

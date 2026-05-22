@@ -31,12 +31,17 @@ class Game:
     # ------------------------------------------------------------------
     def __init__(self):
         pygame.init()
+        pygame.mixer.init()   # inicializa subsistema de áudio separadamente
         self.screen = pygame.display.set_mode(
             (config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
         )
         pygame.display.set_caption(config.TITLE)
         self.clock   = pygame.time.Clock()
         self.running = True
+
+        # --- Áudio ----------------------------------------------------
+        self._inicializar_sons()
+        self._musica_atual: str = ""   # rastreia o arquivo em reprodução
 
         # --- Máquina de Estados ---------------------------------------
         self.estado     = "MENU"   # estado inicial
@@ -59,6 +64,96 @@ class Game:
 
         # --- Construção do nível --------------------------------------
         self._construir_nivel()
+
+        # Música do menu toca ao abrir o jogo
+        self._tocar_musica("audio/musica_menu.ogg", volume=0.40)
+
+    # ══════════════════════════════════════════════════════════════════
+    # ÁUDIO
+    # ══════════════════════════════════════════════════════════════════
+
+    def _inicializar_sons(self):
+        """
+        Carrega efeitos sonoros e guarda em self.sons.
+
+        Estrutura de self.sons
+        ───────────────────────
+        Dicionário  chave → pygame.mixer.Sound | None
+        Valor None significa "arquivo não encontrado" — _tocar_som()
+        checa isso e simplesmente não faz nada, mantendo o jogo silencioso
+        sem lançar exceções.
+
+        Nomenclatura de arquivos
+        ─────────────────────────
+        Coloque os arquivos na pasta 'audio/' ao lado dos .py:
+            audio/sfx_pulo.wav
+            audio/sfx_moeda.wav
+            audio/sfx_morte.wav
+        Formatos suportados pelo pygame.mixer: WAV, OGG, MP3 (plataforma-dependente).
+        OGG é o mais portátil e livre de royalties — recomendado.
+
+        Por que try/except por arquivo, não um único bloco?
+        ─────────────────────────────────────────────────────
+        Um único try/except pararia de carregar no primeiro arquivo
+        ausente. Capturando individualmente, cada som faz seu próprio
+        fallback — os demais continuam carregando normalmente.
+        """
+        def _carregar(caminho: str, volume: float) -> "pygame.mixer.Sound | None":
+            try:
+                som = pygame.mixer.Sound(caminho)
+                som.set_volume(volume)
+                return som
+            except (FileNotFoundError, pygame.error) as e:
+                print(f"[ÁUDIO] Som não encontrado: '{caminho}' ({e})")
+                return None
+
+        self.sons: dict = {
+            # Chave          Arquivo                        Volume
+            "pulo":   _carregar("audio/sfx_pulo.wav",   0.35),
+            "moeda":  _carregar("audio/sfx_moeda.wav",  0.45),
+            "morte":  _carregar("audio/sfx_morte.wav",  0.55),
+            "stomp":  _carregar("audio/sfx_stomp.wav",  0.50),
+            "vitoria":_carregar("audio/sfx_vitoria.wav",0.60),
+        }
+
+    def _tocar_som(self, chave: str):
+        """
+        Dispara um efeito sonoro pelo nome da chave.
+        Não faz nada (silenciosamente) se o som não foi carregado.
+
+        Uso:  self._tocar_som("moeda")
+        """
+        som = self.sons.get(chave)
+        if som is not None:
+            som.play()
+
+    def _tocar_musica(self, arquivo: str, volume: float = 0.40):
+        """
+        Toca um arquivo de música em loop infinito.
+
+        Evita reiniciar a faixa se ela já estiver tocando — útil quando
+        _resetar_jogo() é chamado enquanto a música de fase já está ativa.
+
+        pygame.mixer.music é um canal dedicado, separado dos canais de
+        efeitos (mixer.Sound). Isso permite ajuste de volume independente
+        e troca de faixa sem interromper os SFX em reprodução.
+        """
+        if arquivo == self._musica_atual and pygame.mixer.music.get_busy():
+            return   # já tocando — não reinicia
+
+        try:
+            pygame.mixer.music.load(arquivo)
+            pygame.mixer.music.set_volume(volume)
+            pygame.mixer.music.play(-1)   # -1 = loop infinito
+            self._musica_atual = arquivo
+        except (FileNotFoundError, pygame.error) as e:
+            print(f"[ÁUDIO] Música não encontrada: '{arquivo}' ({e})")
+            self._musica_atual = ""
+
+    def _parar_musica(self):
+        """Para a música de fundo imediatamente e limpa o rastreador."""
+        pygame.mixer.music.stop()
+        self._musica_atual = ""
 
     # ------------------------------------------------------------------
     def _construir_nivel(self, arquivo: str = "fase1.txt"):
@@ -239,14 +334,17 @@ class Game:
                 p.vel_y      = -350.0
                 p.no_chao    = False
                 pisou_algum  = True
+                self._tocar_som("stomp")   # SFX: pisão confirmado
 
         if not pisou_algum:
             self._ir_para_game_over()
 
     def _ir_para_game_over(self):
-        """Registra high score e muda para o estado GAME_OVER."""
+        """Registra high score, dispara SFX de morte e muda para GAME_OVER."""
         if self.score > self.high_score:
             self.high_score = self.score
+        self._parar_musica()
+        self._tocar_som("morte")
         self.estado = "GAME_OVER"
 
     # ══════════════════════════════════════════════════════════════════
@@ -266,7 +364,8 @@ class Game:
             if self.estado == "MENU":
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_SPACE:
-                        self._resetar_jogo()   # constrói o nível e começa
+                        self._resetar_jogo()
+                        self._tocar_musica("audio/musica_fase.ogg", volume=0.35)
 
             # ── JOGANDO ───────────────────────────────────────────────
             elif self.estado == "JOGANDO":
@@ -277,16 +376,22 @@ class Game:
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_r:
                         self._resetar_jogo()
+                        self._tocar_musica("audio/musica_fase.ogg", volume=0.35)
                     elif event.key == pygame.K_m:
+                        self._parar_musica()
                         self.estado = "MENU"
+                        self._tocar_musica("audio/musica_menu.ogg", volume=0.40)
 
             # ── VITÓRIA ───────────────────────────────────────────────
             elif self.estado == "VITORIA":
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_r:
                         self._resetar_jogo()
+                        self._tocar_musica("audio/musica_fase.ogg", volume=0.35)
                     elif event.key == pygame.K_m:
+                        self._parar_musica()
                         self.estado = "MENU"
+                        self._tocar_musica("audio/musica_menu.ogg", volume=0.40)
 
     # ══════════════════════════════════════════════════════════════════
     # 2. ATUALIZAÇÃO — só roda lógica quando estado == "JOGANDO"
@@ -300,17 +405,28 @@ class Game:
         self.player.update(dt, self.plataformas)
         self.inimigos.update(dt)
 
-        # Moedas
+        # ── SFX: pulo ─────────────────────────────────────────────────
+        # player.pulou é levantada em handle_jump e zerada aqui — garante
+        # que o som dispara exatamente uma vez por pressionamento.
+        if self.player.pulou:
+            self._tocar_som("pulo")
+            self.player.pulou = False
+
+        # ── Moedas ────────────────────────────────────────────────────
         coletadas    = pygame.sprite.spritecollide(self.player, self.moedas, dokill=True)
-        self.score  += len(coletadas) * 10
+        if coletadas:
+            self._tocar_som("moeda")
+            self.score += len(coletadas) * 10
 
         # Inimigos — pisão ou Game Over
         self._checar_colisao_inimigos()
 
-        # Vitória: todas as moedas coletadas
+        # ── Vitória: todas as moedas coletadas ─────────────────────────
         if len(self.moedas) == 0:
             if self.score > self.high_score:
                 self.high_score = self.score
+            self._parar_musica()
+            self._tocar_som("vitoria")
             self.estado = "VITORIA"
             return   # câmera não precisa atualizar neste frame
 
