@@ -1,322 +1,494 @@
-# main.py
-# Ponto de entrada do jogo — gerencia a Máquina de Estados principal.
-#
-# Estados possíveis (self.estado)
-# ─────────────────────────────────────────────────────────────────────
-#   "MENU"      → tela inicial; nada se move; aguarda ESPAÇO ou ESC
-#   "JOGANDO"   → gameplay ativo; física, colisões e câmera rodam
-#   "GAME_OVER" → jogador morreu; cena congelada; aguarda R ou M
-#   "VITORIA"   → todas as moedas coletadas; aguarda R ou M
-#
-# Por que strings e não Enum ou constantes inteiras?
-# ─────────────────────────────────────────────────────────────────────
-# Strings são legíveis nos prints de debug, sem precisar importar nada
-# extra. Para projetos maiores, um Enum é preferível (evita typos).
-# Neste estágio do aprendizado, strings tornam o fluxo explícito.
+"""
+main.py
+═══════
+Ponto de entrada do jogo — Game Loop e Máquina de Estados Finita (FSM).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MÁQUINA DE ESTADOS FINITA (FSM)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    ┌─────────┐ ESPAÇO  ┌──────────┐  morte   ┌───────────┐
+    │  MENU   │────────►│ JOGANDO  │─────────►│ GAME_OVER │
+    └─────────┘         └──────────┘          └───────────┘
+         ▲                   │                  R│    │M
+         │                   │ todas moedas      ▼    │
+         │                   ▼                ┌──────┐│
+         │              ┌─────────┐     R     │reset ││
+         └──────M───────│ VITORIA │──────────►│jogo  ││
+                        └─────────┘           └──────┘│
+                              │M                      │
+                              └──────────────────►────┘
+                                              _ir_para_menu()
+
+Cada transição é uma chamada a um método dedicado (_resetar_jogo,
+_ir_para_game_over, _ir_para_vitoria, _ir_para_menu). Nenhuma transição
+acontece diretamente em handle_events() — isso mantém a lógica de
+transição testável e centralizada.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SEPARAÇÃO DE RESPONSABILIDADES NO GAME LOOP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  handle_events()   lê intenções do jogador e do SO
+                    → nunca move objetos, nunca desenha
+
+  update(dt)        avança o mundo em dt segundos
+                    → nunca lê input, nunca desenha
+                    → guarda antecipada: retorna se estado ≠ "JOGANDO"
+
+  draw()            compõe pixels para o frame atual
+                    → nunca lê input, nunca muda estado de jogo
+
+Misturar responsabilidades é a causa mais comum de bugs difíceis de
+reproduzir em jogos (ex.: física executada duas vezes por frame).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GERENCIAMENTO DE MEMÓRIA — GRUPOS DE SPRITES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Sprites do Pygame são contados por referência. Um sprite pode pertencer
+a múltiplos Groups simultaneamente. Se um Group for substituído sem
+esvaziar o anterior, sprites com referências externas (variáveis locais,
+outras estruturas) permanecem vivos na memória — memory leak silencioso
+que cresce a cada reset.
+
+Solução: _construir_nivel() chama group.empty() em todos os grupos
+existentes antes de recriar. empty() chama sprite.kill() em cada membro,
+removendo-o de TODOS os grupos e liberando a Surface para o GC.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+COLISÃO DE PISÃO (STOMP)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Condições simultâneas para stomp:
+  1. player.vel_y > 0              → jogador está caindo
+  2. player.rect.bottom ≤ centery  → base do jogador acima da linha
+                                     média do inimigo
+
+Usar centery (e não rect.top) concede metade da altura do inimigo como
+zona de tolerância — o pisão é detectado mesmo que o jogador ultrapasse
+levemente o topo num frame de alta velocidade.
+
+Após stomp: vel_y = PLAYER_STOMP_BOUNCE (negativo), no_chao = False.
+A flag no_chao deve ser False para que a gravidade retome imediatamente.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ÁUDIO RESILIENTE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Cada arquivo de som tem seu próprio try/except. Um arquivo ausente não
+impede os demais de carregar. self.sons mapeia chave → Sound | None;
+_tocar_som() faz o guard em um único ponto, sem ``if som`` espalhado.
+
+pygame.mixer.music é um canal dedicado de streaming (músicas longas,
+não carregadas na RAM). pygame.mixer.Sound ocupa canais polyphônicos
+(SFX curtos, carregados integralmente para latência mínima).
+"""
+
+from __future__ import annotations
 
 import sys
 import pygame
+
 import config
-from player  import Player
-from sprites import Plataforma, Moeda, Inimigo
 from camera  import Camera
+from player  import Player
+from sprites import Inimigo, Moeda, Plataforma
 
 
-# ═════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
 class Game:
-# ═════════════════════════════════════════════════════════════════════
+    """
+    Orquestra todos os subsistemas do jogo.
 
-    # ------------------------------------------------------------------
+    Atributos persistentes entre partidas (criados em __init__)
+    ─────────────────────────────────────────────────────────────
+    screen, clock, running      infraestrutura do Pygame
+    estado                      estado atual da FSM
+    high_score                  melhor pontuação da sessão
+    sons                        dict[str, Sound | None]
+    _musica_atual               faixa em reprodução (guard de idempotência)
+    _fonte_*                    fontes pré-carregadas
+    _overlay                    Surface semi-transparente pré-renderizada
+    _surf_faixa_menu             Surface da faixa de fundo do menu (pré-renderizada)
+
+    Atributos recriados a cada _construir_nivel()
+    ──────────────────────────────────────────────
+    player, camera, score
+    plataformas, moedas, inimigos   (Groups)
+    _spawn_x, _spawn_y, _total_moedas
+    """
+
+    # Volumes centralizados — ajuste aqui sem abrir os métodos de áudio
+    _VOL_MUSICA_MENU: float = 0.40
+    _VOL_MUSICA_FASE: float = 0.35
+    _VOL_SFX: dict[str, float] = {
+        "pulo":    0.35,
+        "moeda":   0.45,
+        "morte":   0.55,
+        "stomp":   0.50,
+        "vitoria": 0.60,
+    }
+
+    # Mapeamento explícito: chave SFX → constante em config
+    # Preferido sobre getattr dinâmico — erros de nome são capturados
+    # em tempo de importação, não em tempo de execução.
+    _CAMINHOS_SFX: dict[str, str] = {
+        "pulo":    config.SFX_PULO,
+        "moeda":   config.SFX_MOEDA,
+        "morte":   config.SFX_MORTE,
+        "stomp":   config.SFX_STOMP,
+        "vitoria": config.SFX_VITORIA,
+    }
+
+    # ──────────────────────────────────────────────────────────────────
     # INICIALIZAÇÃO
-    # ------------------------------------------------------------------
-    def __init__(self):
+    # ──────────────────────────────────────────────────────────────────
+
+    def __init__(self) -> None:
         pygame.init()
-        pygame.mixer.init()   # inicializa subsistema de áudio separadamente
-        self.screen = pygame.display.set_mode(
+        # mixer.init() separado: permite rodar em ambientes headless
+        # (servidores CI, containers) sem dispositivo de áudio.
+        pygame.mixer.init()
+
+        self.screen: pygame.Surface = pygame.display.set_mode(
             (config.SCREEN_WIDTH, config.SCREEN_HEIGHT)
         )
         pygame.display.set_caption(config.TITLE)
-        self.clock   = pygame.time.Clock()
-        self.running = True
 
-        # --- Áudio ----------------------------------------------------
+        self.clock:   pygame.time.Clock = pygame.time.Clock()
+        self.running: bool              = True
+
+        # ── FSM ───────────────────────────────────────────────────────
+        self.estado:     str = "MENU"
+        self.high_score: int = 0
+
+        # ── Áudio ─────────────────────────────────────────────────────
+        self._musica_atual: str = ""
         self._inicializar_sons()
-        self._musica_atual: str = ""   # rastreia o arquivo em reprodução
 
-        # --- Máquina de Estados ---------------------------------------
-        self.estado     = "MENU"   # estado inicial
-        self.high_score = 0        # persiste entre partidas na mesma sessão
+        # ── Fontes (SysFont tem custo de I/O — criadas uma única vez) ─
+        self._fonte_titulo:    pygame.font.Font = pygame.font.SysFont(None, 90)
+        self._fonte_subtitulo: pygame.font.Font = pygame.font.SysFont(None, 42)
+        self._fonte_hud:       pygame.font.Font = pygame.font.SysFont(None, 30)
+        self._fonte_score:     pygame.font.Font = pygame.font.SysFont(None, 36)
 
-        # --- Fontes (criadas uma vez, reutilizadas em todo frame) -----
-        self.fonte_titulo   = pygame.font.SysFont(None, 90)
-        self.fonte_subtitulo = pygame.font.SysFont(None, 42)
-        self.fonte_hud      = pygame.font.SysFont(None, 30)
-        self.fonte_score    = pygame.font.SysFont(None, 36)
-
-        # --- Overlay semi-transparente para Game Over / Vitória -------
-        # Surface do tamanho da tela com suporte a alfa por pixel.
-        # Preenchida com preto a 170/255 (~66% opaco) — deixa o cenário
-        # visível ao fundo, dando contexto sem distrair do texto.
-        self._overlay = pygame.Surface(
+        # ── Surfaces pré-renderizadas (criadas uma vez, blit a cada frame) ─
+        # Overlay: preto a ~67% de opacidade para painéis de Game Over / Vitória.
+        self._overlay: pygame.Surface = pygame.Surface(
             (config.SCREEN_WIDTH, config.SCREEN_HEIGHT), pygame.SRCALPHA
         )
         self._overlay.fill((0, 0, 0, 170))
 
-        # --- Construção do nível --------------------------------------
-        self._construir_nivel()
+        # Faixa azul-marinho para o terço superior do menu.
+        # Criar Surface dentro de _draw_menu() custaria uma alocação por frame
+        # (60x/s) — movida para cá elimina o custo sem mudar o visual.
+        self._surf_faixa_menu: pygame.Surface = pygame.Surface(
+            (config.SCREEN_WIDTH, config.SCREEN_HEIGHT // 2)
+        )
+        self._surf_faixa_menu.fill((15, 15, 45))
 
-        # Música do menu toca ao abrir o jogo
-        self._tocar_musica(config.MUSICA_MENU, volume=0.40)
+        # ── Nível inicial ─────────────────────────────────────────────
+        self._construir_nivel()
+        self._tocar_musica(config.MUSICA_MENU, self._VOL_MUSICA_MENU)
 
     # ══════════════════════════════════════════════════════════════════
     # ÁUDIO
     # ══════════════════════════════════════════════════════════════════
 
-    def _inicializar_sons(self):
+    def _inicializar_sons(self) -> None:
         """
-        Carrega efeitos sonoros e guarda em self.sons.
+        Carrega cada SFX de forma independente com try/except próprio.
 
-        Estrutura de self.sons
-        ───────────────────────
-        Dicionário  chave → pygame.mixer.Sound | None
-        Valor None significa "arquivo não encontrado" — _tocar_som()
-        checa isso e simplesmente não faz nada, mantendo o jogo silencioso
-        sem lançar exceções.
+        Um arquivo ausente não impede os demais de carregar. O resultado
+        é self.sons: dict[str, Sound | None]. O valor None indica "arquivo
+        não encontrado" — _tocar_som() faz o guard em um único ponto.
 
-        Nomenclatura de arquivos
-        ─────────────────────────
-        Coloque os arquivos na pasta 'audio/' ao lado dos .py:
-            audio/sfx_pulo.wav
-            audio/sfx_moeda.wav
-            audio/sfx_morte.wav
-        Formatos suportados pelo pygame.mixer: WAV, OGG, MP3 (plataforma-dependente).
-        OGG é o mais portátil e livre de royalties — recomendado.
-
-        Por que try/except por arquivo, não um único bloco?
-        ─────────────────────────────────────────────────────
-        Um único try/except pararia de carregar no primeiro arquivo
-        ausente. Capturando individualmente, cada som faz seu próprio
-        fallback — os demais continuam carregando normalmente.
+        Por que mapeamento explícito (_CAMINHOS_SFX) e não getattr()?
+        ─────────────────────────────────────────────────────────────────
+        getattr(config, f"SFX_{chave.upper()}") falha em runtime com
+        AttributeError se uma chave não tiver correspondente em config —
+        silenciosamente ignorada pelo except. Com o dict explícito, um
+        erro de nome é capturado em tempo de importação (NameError), muito
+        mais fácil de depurar.
         """
-        def _carregar(caminho: str, volume: float) -> "pygame.mixer.Sound | None":
+        def _tentar_carregar(caminho: str, volume: float) -> pygame.mixer.Sound | None:
             try:
                 som = pygame.mixer.Sound(caminho)
                 som.set_volume(volume)
                 return som
-            except (FileNotFoundError, pygame.error) as e:
-                print(f"[ÁUDIO] Som não encontrado: '{caminho}' ({e})")
+            except (FileNotFoundError, pygame.error) as exc:
+                print(f"[ÁUDIO] Não encontrado: '{caminho}' — {exc}")
                 return None
 
-        self.sons: dict = {
-            # Chave          Arquivo                  Volume
-            "pulo":    _carregar(config.SFX_PULO,    0.35),
-            "moeda":   _carregar(config.SFX_MOEDA,   0.45),
-            "morte":   _carregar(config.SFX_MORTE,   0.55),
-            "stomp":   _carregar(config.SFX_STOMP,   0.50),
-            "vitoria": _carregar(config.SFX_VITORIA, 0.60),
+        self.sons: dict[str, pygame.mixer.Sound | None] = {
+            chave: _tentar_carregar(caminho, self._VOL_SFX[chave])
+            for chave, caminho in self._CAMINHOS_SFX.items()
         }
 
-    def _tocar_som(self, chave: str):
+    def _tocar_som(self, chave: str) -> None:
         """
-        Dispara um efeito sonoro pelo nome da chave.
-        Não faz nada (silenciosamente) se o som não foi carregado.
-
-        Uso:  self._tocar_som("moeda")
+        Dispara um SFX pelo nome. No-op silencioso se ausente ou None.
+        Centralizar o guard aqui evita checagens espalhadas pelo código.
         """
         som = self.sons.get(chave)
         if som is not None:
             som.play()
 
-    def _tocar_musica(self, arquivo: str, volume: float = 0.40):
+    def _tocar_musica(self, arquivo: str, volume: float = 0.40) -> None:
         """
-        Toca um arquivo de música em loop infinito.
+        Carrega e toca um arquivo de música em loop infinito.
 
-        Evita reiniciar a faixa se ela já estiver tocando — útil quando
-        _resetar_jogo() é chamado enquanto a música de fase já está ativa.
+        Guard de idempotência: não reinicia a faixa se ela já estiver
+        tocando — evita o "click" audível ao chamar _resetar_jogo()
+        enquanto a música de fase já está em reprodução.
 
-        pygame.mixer.music é um canal dedicado, separado dos canais de
-        efeitos (mixer.Sound). Isso permite ajuste de volume independente
-        e troca de faixa sem interromper os SFX em reprodução.
+        pygame.mixer.music: streaming do disco, canal dedicado, sem
+        interferência com os canais polyfônicos dos SFX.
         """
         if arquivo == self._musica_atual and pygame.mixer.music.get_busy():
-            return   # já tocando — não reinicia
+            return
 
         try:
             pygame.mixer.music.load(arquivo)
             pygame.mixer.music.set_volume(volume)
             pygame.mixer.music.play(-1)   # -1 = loop infinito
             self._musica_atual = arquivo
-        except (FileNotFoundError, pygame.error) as e:
-            print(f"[ÁUDIO] Música não encontrada: '{arquivo}' ({e})")
+        except (FileNotFoundError, pygame.error) as exc:
+            print(f"[ÁUDIO] Música não encontrada: '{arquivo}' — {exc}")
             self._musica_atual = ""
 
-    def _parar_musica(self):
-        """Para a música de fundo imediatamente e limpa o rastreador."""
+    def _parar_musica(self) -> None:
+        """Para a música imediatamente e zera o rastreador de faixa."""
         pygame.mixer.music.stop()
         self._musica_atual = ""
 
-    # ------------------------------------------------------------------
-    def _construir_nivel(self, arquivo: str = config.FASE_1):
-        """
-        Inicializa os grupos e delega a construção ao carregador de fase.
-        Separado do __init__ para permitir reset sem recriar a janela.
-        """
-        self.camera = Camera()
-        self.score  = 0
+    # ══════════════════════════════════════════════════════════════════
+    # CONSTRUÇÃO E CARREGAMENTO DE FASE
+    # ══════════════════════════════════════════════════════════════════
 
-        self.plataformas = pygame.sprite.Group()
-        self.moedas      = pygame.sprite.Group()
-        self.inimigos    = pygame.sprite.Group()
+    def _construir_nivel(self, arquivo: str = config.FASE_1) -> None:
+        """
+        Cria (ou reconstrói) todos os objetos do nível a partir do arquivo.
 
-        # Spawn padrão — sobrescrito por 'P' no mapa
+        Separado de __init__ para que _resetar_jogo() possa reconstruir
+        o mundo sem recriar a janela (evita flash de display.set_mode).
+
+        Gerenciamento de memória — anti-leak
+        ──────────────────────────────────────
+        Na primeira chamada os grupos ainda não existem; getattr retorna
+        None e o empty() é pulado.
+
+        Nas chamadas seguintes (reset): empty() é chamado em cada grupo
+        antes de reatribuir. empty() invoca kill() em cada sprite,
+        removendo-o de TODOS os grupos e permitindo que o GC libere as
+        Surfaces. Sem empty(), sprites com referências externas sobrevivem
+        como "fantasmas" na memória — leak silencioso que cresce a cada
+        partida.
+
+        Ordem obrigatória: empty() ANTES de reatribuir os grupos.
+        """
+        self.score: int = 0
+
+        # Limpa grupos existentes antes de recriar (anti-leak)
+        for nome_attr in ("plataformas", "moedas", "inimigos"):
+            grupo = getattr(self, nome_attr, None)
+            if isinstance(grupo, pygame.sprite.Group):
+                grupo.empty()
+
+        self.camera:      Camera              = Camera()
+        self.plataformas: pygame.sprite.Group = pygame.sprite.Group()
+        self.moedas:      pygame.sprite.Group = pygame.sprite.Group()
+        self.inimigos:    pygame.sprite.Group = pygame.sprite.Group()
+
+        # Spawn padrão — sobrescrito pelo tile 'P' no mapa
         self._spawn_x: float = float(config.TILE_SIZE)
         self._spawn_y: float = float(config.TILE_SIZE)
 
         self._carregar_fase(arquivo)
 
-        # Player criado DEPOIS do carregamento para usar o spawn lido do mapa
-        self.player = Player(self._spawn_x, self._spawn_y)
+        # Player criado APÓS o carregamento para usar o spawn lido do mapa.
+        # Se criado antes, usaria o spawn padrão e ignoraria o 'P'.
+        self.player: Player = Player(self._spawn_x, self._spawn_y)
 
-        # Total de moedas para a barra de progresso no HUD
-        self._total_moedas = len(self.moedas)
+        # Total capturado aqui para que a barra de progresso use a contagem
+        # completa, incluindo moedas que serão coletadas depois.
+        self._total_moedas: int = len(self.moedas)
 
-    # ------------------------------------------------------------------
-    def _carregar_fase(self, nome_arquivo: str):
+    def _carregar_fase(self, nome_arquivo: str) -> None:
         """
-        Lê um arquivo de texto e popula os grupos de sprites.
+        Lê o arquivo de texto e popula os grupos de sprites.
 
-        Formato do arquivo
-        ──────────────────
-        Cada caractere é um tile de config.TILE_SIZE × config.TILE_SIZE px.
-        O índice de coluna 'col' e de linha 'lin' viram coordenadas de mundo:
-            mundo_x = col * TILE_SIZE
-            mundo_y = lin * TILE_SIZE
+        Formato do grid
+        ────────────────
+        Cada caractere = tile de TILE_SIZE × TILE_SIZE px.
+        Posição de mundo: (col * TILE_SIZE,  lin * TILE_SIZE).
 
         Legenda de tiles
-        ──────────────────
+        ─────────────────
           '.'  espaço vazio (céu) — ignorado
           '#'  plataforma sólida
-          'M'  moeda (centralizada no tile)
-          'E'  inimigo patrulheiro
-          'P'  spawn do jogador — não cria sprite, só guarda posição
+          'M'  moeda — centralizada no tile
+          'E'  inimigo — limites de patrulha calculados automaticamente
+          'P'  spawn do jogador — salva posição, não cria sprite
 
-        Patrulha dos inimigos
-        ──────────────────────
-        Para definir os limites de patrulha automaticamente, o método
-        escaneia horizontalmente a partir da coluna do inimigo e procura
-        até onde há plataforma sólida na linha imediatamente abaixo.
-        Se não encontrar, usa ±3 tiles como fallback seguro.
-
-        Erros de arquivo
-        ──────────────────
-        Se o arquivo não existir, imprime aviso e retorna sem travar o jogo.
+        Tratamento de erro
+        ───────────────────
+        FileNotFoundError → aviso no terminal + retorno silencioso.
+        O jogo continua com grupos vazios, permitindo rodar durante
+        desenvolvimento mesmo sem o arquivo de fase.
         """
         T = config.TILE_SIZE
 
         try:
             with open(nome_arquivo, encoding="utf-8") as f:
-                linhas = [linha.rstrip("\n") for linha in f.readlines()]
+                grid = [linha.rstrip("\n") for linha in f]
         except FileNotFoundError:
-            print(f"[ERRO] Arquivo de fase não encontrado: '{nome_arquivo}'")
+            print(f"[FASE] Arquivo não encontrado: '{nome_arquivo}'")
             return
 
-        # Grid como lista de strings para consultar tiles vizinhos
-        grid = linhas
-        num_colunas = max(len(l) for l in grid) if grid else 0
+        num_colunas = max((len(l) for l in grid), default=0)
 
         for lin, linha in enumerate(grid):
             for col, tile in enumerate(linha):
+                mx = col * T   # coordenada X de mundo
+                my = lin * T   # coordenada Y de mundo
 
-                mundo_x = col * T
-                mundo_y = lin * T
-
-                # ── Plataforma ────────────────────────────────────────
                 if tile == "#":
-                    self.plataformas.add(
-                        Plataforma(mundo_x, mundo_y, T, T)
-                    )
+                    self.plataformas.add(Plataforma(mx, my, T, T))
 
-                # ── Moeda ─────────────────────────────────────────────
                 elif tile == "M":
-                    # Centraliza a moeda no tile
-                    self.moedas.add(Moeda(mundo_x + T // 2, mundo_y + T // 2))
+                    self.moedas.add(Moeda(mx + T // 2, my + T // 2))
 
-                # ── Inimigo ───────────────────────────────────────────
                 elif tile == "E":
                     x_min, x_max = self._limites_patrulha(
                         grid, lin, col, num_colunas
                     )
                     self.inimigos.add(
-                        Inimigo(mundo_x, mundo_y, x_min, x_max, velocidade=110.0)
+                        Inimigo(mx, my, x_min, x_max, velocidade=110.0)
                     )
 
-                # ── Spawn do jogador ──────────────────────────────────
                 elif tile == "P":
-                    self._spawn_x = float(mundo_x)
-                    self._spawn_y = float(mundo_y)
+                    self._spawn_x = float(mx)
+                    self._spawn_y = float(my)
 
-    # ------------------------------------------------------------------
     def _limites_patrulha(
         self,
-        grid: list,
+        grid:        list[str],
         lin_inimigo: int,
         col_inimigo: int,
         num_colunas: int,
-    ) -> tuple:
+    ) -> tuple[int, int]:
         """
-        Calcula x_min e x_max de patrulha para um inimigo.
+        Calcula (x_min, x_max) de patrulha para um inimigo em world-space.
 
-        Varre para a esquerda e direita enquanto houver tile '#' na linha
-        diretamente abaixo do inimigo (lin_inimigo + 1). Para no primeiro
-        buraco ou na borda do mapa.
+        Estratégia: scan de chão
+        ─────────────────────────
+        Percorre colunas adjacentes enquanto houver tile '#' na linha
+        imediatamente abaixo do inimigo (lin_chao = lin_inimigo + 1).
+        Para no primeiro buraco ou na borda do mapa.
 
-        Retorna (x_min, x_max) em pixels de mundo.
+        Fallback: sem chão detectado → ±3 tiles (inimigo flutuante).
+
+        Retorno: (x_min, x_max) em pixels de mundo.
+        x_max = (col_dir + 1) * T usa a borda direita do tile mais à direita.
         """
         T        = config.TILE_SIZE
         lin_chao = lin_inimigo + 1
 
         def tem_chao(col: int) -> bool:
-            if col < 0 or col >= num_colunas:
+            """True se (lin_chao, col) for tile sólido '#'."""
+            if not (0 <= col < num_colunas):
                 return False
             if lin_chao >= len(grid):
                 return False
-            linha = grid[lin_chao]
-            return col < len(linha) and linha[col] == "#"
+            row = grid[lin_chao]
+            return col < len(row) and row[col] == "#"
 
-        # Varre esquerda
         col_esq = col_inimigo
         while col_esq > 0 and tem_chao(col_esq - 1):
             col_esq -= 1
 
-        # Varre direita
         col_dir = col_inimigo
         while col_dir < num_colunas - 1 and tem_chao(col_dir + 1):
             col_dir += 1
 
-        # Fallback: sem chão detectado → ±3 tiles
+        # Fallback: inimigo sem chão detectado
         if col_esq == col_inimigo and col_dir == col_inimigo:
             col_esq = max(0,               col_inimigo - 3)
             col_dir = min(num_colunas - 1, col_inimigo + 3)
 
         return col_esq * T, (col_dir + 1) * T
 
-    # ------------------------------------------------------------------
-    def _resetar_jogo(self):
-        """
-        Reconstrói o nível e volta ao estado JOGANDO.
-        Preserva self.high_score — ele sobrevive entre partidas.
-        """
+    # ══════════════════════════════════════════════════════════════════
+    # TRANSIÇÕES DE ESTADO
+    # ══════════════════════════════════════════════════════════════════
+    # Cada transição é um método dedicado. handle_events() nunca altera
+    # self.estado diretamente — sempre delega para cá. Isso centraliza
+    # os efeitos colaterais (áudio, score, construção de nível) e torna
+    # as transições testáveis de forma independente.
+
+    def _resetar_jogo(self) -> None:
+        """Reconstrói o nível e transita para JOGANDO. Preserva high_score."""
         self._construir_nivel()
         self.estado = "JOGANDO"
 
+    def _ir_para_game_over(self) -> None:
+        """Derrota: atualiza high_score, para música, dispara SFX, muda estado."""
+        if self.score > self.high_score:
+            self.high_score = self.score
+        self._parar_musica()
+        self._tocar_som("morte")
+        self.estado = "GAME_OVER"
+
+    def _ir_para_vitoria(self) -> None:
+        """Vitória: atualiza high_score, para música, dispara jingle, muda estado."""
+        if self.score > self.high_score:
+            self.high_score = self.score
+        self._parar_musica()
+        self._tocar_som("vitoria")
+        self.estado = "VITORIA"
+
+    def _ir_para_menu(self) -> None:
+        """Para a música atual, transita para MENU e toca a trilha do menu."""
+        self._parar_musica()
+        self.estado = "MENU"
+        self._tocar_musica(config.MUSICA_MENU, self._VOL_MUSICA_MENU)
+
     # ══════════════════════════════════════════════════════════════════
-    # COLISÕES (helpers chamados apenas quando estado == "JOGANDO")
+    # COLISÕES DE COMBATE
     # ══════════════════════════════════════════════════════════════════
 
-    def _checar_colisao_inimigos(self):
+    def _checar_colisao_inimigos(self) -> None:
         """
-        Pisão (stomp) → mata o inimigo, +50, mini-impulso.
-        Toque lateral/inferior → Game Over.
+        Avalia cada colisão jogador ↔ inimigo e aplica o desfecho.
+
+        Pisão (stomp) — condições simultâneas obrigatórias
+        ────────────────────────────────────────────────────
+          1. player.vel_y > 0            → caindo (nunca subindo)
+          2. player.rect.bottom ≤ centery → base do jogador acima da
+                                            linha média do inimigo
+
+        O limiar centery (e não rect.top) concede tolerância de metade
+        da altura do inimigo — evita falsos negativos em frames de alta
+        velocidade onde o jogador "pula" o pixel exato do topo.
+
+        Resultado de pisão confirmado
+        ──────────────────────────────
+          • inimigo.kill()                 — remove de todos os grupos
+          • score += 50
+          • vel_y = PLAYER_STOMP_BOUNCE    — impulso para cima (negativo)
+          • no_chao = False                — retoma gravidade imediatamente
+          • SFX "stomp"
+
+        Resultado de toque lateral/inferior
+        ─────────────────────────────────────
+          • _ir_para_game_over()
+
+        Nota de segurança de iteração
+        ───────────────────────────────
+        spritecollide() retorna uma lista (cópia) — inimigo.kill() dentro
+        do loop não modifica o iterador. Seguro sem list() extra.
         """
         colididos = pygame.sprite.spritecollide(
             self.player, self.inimigos, dokill=False
@@ -324,129 +496,152 @@ class Game:
         if not colididos:
             return
 
-        p = self.player
+        p           = self.player
         pisou_algum = False
 
         for inimigo in colididos:
-            if p.vel_y > 0 and p.rect.bottom <= inimigo.rect.centery:
+            caindo          = p.vel_y > 0
+            base_acima_meio = p.rect.bottom <= inimigo.rect.centery
+
+            if caindo and base_acima_meio:
                 inimigo.kill()
-                self.score  += 50
-                p.vel_y      = -350.0
-                p.no_chao    = False
-                pisou_algum  = True
-                self._tocar_som("stomp")   # SFX: pisão confirmado
+                self.score   += 50
+                p.vel_y       = config.PLAYER_STOMP_BOUNCE
+                p.no_chao     = False
+                pisou_algum   = True
+                self._tocar_som("stomp")
 
         if not pisou_algum:
             self._ir_para_game_over()
 
-    def _ir_para_game_over(self):
-        """Registra high score, dispara SFX de morte e muda para GAME_OVER."""
-        if self.score > self.high_score:
-            self.high_score = self.score
-        self._parar_musica()
-        self._tocar_som("morte")
-        self.estado = "GAME_OVER"
-
     # ══════════════════════════════════════════════════════════════════
-    # 1. EVENTOS  — roteados pelo estado atual
+    # 1. EVENTOS — roteados pelo estado atual da FSM
     # ══════════════════════════════════════════════════════════════════
 
-    def handle_events(self):
+    def handle_events(self) -> None:
+        """
+        Lê e roteia todos os eventos do frame atual.
+
+        Regra: nunca modifica variáveis de física, nunca chama draw(),
+        nunca avança o tempo. Apenas lê intenções e dispara transições.
+
+        Estrutura do loop
+        ──────────────────
+        QUIT e K_ESCAPE são processados e encerram o jogo imediatamente
+        com break (não return) — o loop de eventos continua para processar
+        os demais eventos pendentes do mesmo frame antes de sair.
+
+        Os demais eventos são roteados pelo estado atual. Eventos não
+        relevantes para o estado corrente são silenciosamente ignorados.
+        """
         for event in pygame.event.get():
 
-            # ESC e fechar janela sempre funcionam
+            # ── Saída global (qualquer estado) ────────────────────────
             if event.type == pygame.QUIT:
                 self.running = False
+                break   # encerra o loop; demais eventos são descartados
+
             if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self.running = False
+                break
 
-            # ── MENU ──────────────────────────────────────────────────
+            # ── Roteamento por estado ─────────────────────────────────
             if self.estado == "MENU":
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_SPACE:
-                        self._resetar_jogo()
-                        self._tocar_musica(config.MUSICA_FASE, volume=0.35)
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                    self._resetar_jogo()
+                    self._tocar_musica(config.MUSICA_FASE, self._VOL_MUSICA_FASE)
 
-            # ── JOGANDO ───────────────────────────────────────────────
             elif self.estado == "JOGANDO":
+                # Delega ao Player — ele filtra internamente por KEYDOWN
                 self.player.handle_jump(event)
 
-            # ── GAME_OVER ─────────────────────────────────────────────
-            elif self.estado == "GAME_OVER":
+            elif self.estado in ("GAME_OVER", "VITORIA"):
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_r:
                         self._resetar_jogo()
-                        self._tocar_musica(config.MUSICA_FASE, volume=0.35)
+                        self._tocar_musica(config.MUSICA_FASE, self._VOL_MUSICA_FASE)
                     elif event.key == pygame.K_m:
-                        self._parar_musica()
-                        self.estado = "MENU"
-                        self._tocar_musica(config.MUSICA_MENU, volume=0.40)
-
-            # ── VITÓRIA ───────────────────────────────────────────────
-            elif self.estado == "VITORIA":
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_r:
-                        self._resetar_jogo()
-                        self._tocar_musica(config.MUSICA_FASE, volume=0.35)
-                    elif event.key == pygame.K_m:
-                        self._parar_musica()
-                        self.estado = "MENU"
-                        self._tocar_musica(config.MUSICA_MENU, volume=0.40)
+                        self._ir_para_menu()
 
     # ══════════════════════════════════════════════════════════════════
-    # 2. ATUALIZAÇÃO — só roda lógica quando estado == "JOGANDO"
+    # 2. ATUALIZAÇÃO — física e lógica de jogo
     # ══════════════════════════════════════════════════════════════════
 
-    def update(self, dt: float):
-        # Mundo congelado em qualquer estado que não seja JOGANDO
+    def update(self, dt: float) -> None:
+        """
+        Avança o estado do mundo em dt segundos.
+
+        Guarda antecipada: retorna imediatamente se estado ≠ "JOGANDO".
+        Isso congela o mundo nos demais estados sem aninhamento.
+
+        Ordem de operações dentro do estado JOGANDO
+        ─────────────────────────────────────────────
+        1. Física do jogador   (movimento + colisão com plataformas)
+        2. Física dos inimigos (patrulha independente)
+        3. SFX de pulo         (One-Frame Event Flag — lida e zerada aqui)
+        4. Coleta de moedas    (score + SFX)
+        5. Combate com inimigos (stomp ou game over)
+        6. Condição de vitória (verificada após coleta — score atualizado)
+        7. Câmera              (sempre depois do jogador — posição final)
+        """
         if self.estado != "JOGANDO":
             return
 
+        # ── Física ────────────────────────────────────────────────────
         self.player.update(dt, self.plataformas)
         self.inimigos.update(dt)
 
-        # ── SFX: pulo ─────────────────────────────────────────────────
-        # player.pulou é levantada em handle_jump e zerada aqui — garante
-        # que o som dispara exatamente uma vez por pressionamento.
+        # ── SFX de pulo ───────────────────────────────────────────────
         if self.player.pulou:
             self._tocar_som("pulo")
             self.player.pulou = False
 
-        # ── Moedas ────────────────────────────────────────────────────
-        coletadas    = pygame.sprite.spritecollide(self.player, self.moedas, dokill=True)
+        # ── Coleta de moedas ──────────────────────────────────────────
+        coletadas = pygame.sprite.spritecollide(
+            self.player, self.moedas, dokill=True
+        )
         if coletadas:
+            self.score += len(coletadas) * Moeda.VALOR
             self._tocar_som("moeda")
-            self.score += len(coletadas) * 10
 
-        # Inimigos — pisão ou Game Over
+        # ── Combate com inimigos ──────────────────────────────────────
         self._checar_colisao_inimigos()
 
-        # ── Vitória: todas as moedas coletadas ─────────────────────────
-        if len(self.moedas) == 0:
-            if self.score > self.high_score:
-                self.high_score = self.score
-            self._parar_musica()
-            self._tocar_som("vitoria")
-            self.estado = "VITORIA"
-            return   # câmera não precisa atualizar neste frame
+        # ── Condição de vitória ───────────────────────────────────────
+        # `not self.moedas` é equivalente a `len(self.moedas) == 0`
+        # mas mais idiomático e sem chamada de função.
+        if not self.moedas:
+            self._ir_para_vitoria()
+            return   # câmera não precisa atualizar — frame de transição
 
-        # Câmera — sempre depois do jogador
+        # ── Câmera ────────────────────────────────────────────────────
         self.camera.update(self.player.rect)
 
     # ══════════════════════════════════════════════════════════════════
-    # 3. RENDERIZAÇÃO — cada estado tem sua rotina de draw
+    # 3. RENDERIZAÇÃO — roteada pelo estado atual da FSM
     # ══════════════════════════════════════════════════════════════════
 
-    def draw(self):
+    def draw(self) -> None:
+        """
+        Roteia a renderização para o método correto.
+
+        Regra: nunca lê input, nunca muda estado, nunca avança física.
+
+        GAME_OVER e VITORIA desenham o cenário congelado ao fundo antes
+        do overlay e do painel — fornece contexto visual sem distrair.
+        """
         if self.estado == "MENU":
             self._draw_menu()
+
         elif self.estado == "JOGANDO":
             self._draw_jogo()
             self._draw_hud()
+
         elif self.estado == "GAME_OVER":
-            self._draw_jogo()          # cenário ao fundo (congelado)
+            self._draw_jogo()
             self._draw_overlay()
             self._draw_game_over()
+
         elif self.estado == "VITORIA":
             self._draw_jogo()
             self._draw_overlay()
@@ -455,183 +650,209 @@ class Game:
         pygame.display.flip()
 
     # ------------------------------------------------------------------
-    # Rotinas de draw por tela
+    # Rotinas de renderização por estado
     # ------------------------------------------------------------------
 
-    def _draw_menu(self):
-        """Tela inicial: fundo escuro, título, subtítulo e high score."""
-        SW, SH = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
+    def _draw_menu(self) -> None:
+        """Tela de menu: fundo escuro, título, controles e high score."""
+        SW, SH   = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
+        mid_x    = SW // 2
+        mid_y    = SH // 2
+
         self.screen.fill(config.BLACK)
 
-        # Gradiente simples: faixa azul-marinho no topo
-        faixa = pygame.Surface((SW, SH // 2))
-        faixa.fill((15, 15, 45))
-        self.screen.blit(faixa, (0, 0))
+        # Faixa pré-renderizada — sem alocação de Surface por frame
+        self.screen.blit(self._surf_faixa_menu, (0, 0))
 
-        # Título
-        self._blit_centralizado(
-            self.fonte_titulo, config.TITLE,
-            config.YELLOW, SW // 2, SH // 2 - 100,
+        self._texto(
+            self._fonte_titulo, config.TITLE,
+            config.YELLOW, mid_x, mid_y - 100,
+        )
+        self._texto(
+            self._fonte_subtitulo, "Pressione ESPAÇO para Iniciar",
+            config.WHITE, mid_x, mid_y + 10,
+        )
+        self._texto(
+            self._fonte_hud, "← → / A D  Mover    ESPAÇO / ↑ / W  Pular",
+            (180, 180, 180), mid_x, mid_y + 65,
         )
 
-        # Subtítulo
-        self._blit_centralizado(
-            self.fonte_subtitulo, "Pressione ESPAÇO para Iniciar",
-            config.WHITE, SW // 2, SH // 2 + 10,
-        )
-
-        # Controles
-        self._blit_centralizado(
-            self.fonte_hud, "← → / A D   Mover      ESPAÇO / ↑ / W   Pular",
-            (180, 180, 180), SW // 2, SH // 2 + 65,
-        )
-
-        # High score (só aparece se o jogador já jogou ao menos uma vez)
         if self.high_score > 0:
-            self._blit_centralizado(
-                self.fonte_subtitulo, f"High Score: {self.high_score}",
-                config.GOLD, SW // 2, SH // 2 + 120,
+            self._texto(
+                self._fonte_subtitulo, f"High Score: {self.high_score}",
+                config.GOLD, mid_x, mid_y + 120,
             )
 
-    def _draw_jogo(self):
-        """Renderiza o cenário completo com offset da câmera."""
+    def _draw_jogo(self) -> None:
+        """
+        Renderiza o cenário completo com offset de câmera.
+
+        Por que não usar Group.draw()?
+        ───────────────────────────────
+        Group.draw() usa sprite.rect diretamente (world-space). A câmera
+        precisa de um Rect ajustado (screen-space) via Camera.aplicar(),
+        que retorna um novo Rect sem modificar o original — preservando
+        a física. Loop manual é necessário para interpor o offset.
+        """
         self.screen.fill(config.SKY_BLUE)
 
-        for plat in self.plataformas:
-            self.screen.blit(plat.image, self.camera.aplicar(plat.rect))
+        for spr in self.plataformas:
+            self.screen.blit(spr.image, self.camera.aplicar(spr.rect))
 
-        for moeda in self.moedas:
-            self.screen.blit(moeda.image, self.camera.aplicar(moeda.rect))
+        for spr in self.moedas:
+            self.screen.blit(spr.image, self.camera.aplicar(spr.rect))
 
-        for inimigo in self.inimigos:
-            self.screen.blit(inimigo.image, self.camera.aplicar(inimigo.rect))
+        for spr in self.inimigos:
+            self.screen.blit(spr.image, self.camera.aplicar(spr.rect))
 
-        rect_tela = self.camera.aplicar(self.player.rect)
-        self.player.draw(self.screen, rect_tela)
+        self.player.draw(self.screen, self.camera.aplicar(self.player.rect))
 
-    def _draw_hud(self):
-        """HUD em jogo: score (canto superior direito) + debug (canto esquerdo)."""
+    def _draw_hud(self) -> None:
+        """HUD em gameplay: score (canto direito), barra de progresso e debug."""
         SW = config.SCREEN_WIDTH
 
-        # Score com sombra
-        self._blit_com_sombra(
-            self.fonte_score, f"Score: {self.score}",
+        # Score — canto superior direito
+        self._texto(
+            self._fonte_score, f"Score: {self.score}",
             config.YELLOW, SW - 10, 10, ancora="topright",
         )
 
-        # Barra de progresso de moedas
-        moedas_restantes = len(self.moedas)
-        coletadas        = self._total_moedas - moedas_restantes
-        barra_w_total    = 160
-        barra_h          = 10
-        barra_x, barra_y = 10, 38
+        # Barra de progresso de moedas coletadas
+        coletadas  = self._total_moedas - len(self.moedas)
+        barra_w    = 160
+        barra_h    = 10
+        barra_x    = 10
+        barra_y    = 38
 
-        pygame.draw.rect(self.screen, (80, 80, 80),
-                         (barra_x, barra_y, barra_w_total, barra_h), border_radius=4)
-        if self._total_moedas > 0:
-            progresso = int(barra_w_total * coletadas / self._total_moedas)
-            if progresso > 0:
-                pygame.draw.rect(self.screen, config.YELLOW,
-                                 (barra_x, barra_y, progresso, barra_h), border_radius=4)
-
-        label = self.fonte_hud.render(
-            f"Moedas: {coletadas}/{self._total_moedas}", True, config.WHITE
+        # Fundo cinza da barra
+        pygame.draw.rect(
+            self.screen, (80, 80, 80),
+            (barra_x, barra_y, barra_w, barra_h),
+            border_radius=4,
         )
-        self.screen.blit(label, (barra_x, barra_y + 14))
+        # Preenchimento proporcional
+        if self._total_moedas > 0:
+            preenchido = int(barra_w * coletadas / self._total_moedas)
+            if preenchido > 0:
+                pygame.draw.rect(
+                    self.screen, config.YELLOW,
+                    (barra_x, barra_y, preenchido, barra_h),
+                    border_radius=4,
+                )
 
-        # Linha de debug (canto superior esquerdo)
-        debug = self.fonte_hud.render(
+        # Legenda da barra — renderizada separadamente para clareza
+        surf_moedas = self._fonte_hud.render(
+            f"Moedas: {coletadas}/{self._total_moedas}",
+            True, config.WHITE,
+        )
+        self.screen.blit(surf_moedas, (barra_x, barra_y + 14))
+
+        # Linha de debug — canto superior esquerdo
+        texto_debug = (
             f"X: {int(self.player.x)}  "
             f"anim: {self.player.estado_animacao}[{self.player.frame_atual}]  "
-            f"inimigos: {len(self.inimigos)}",
-            True, config.BLACK,
+            f"inimigos: {len(self.inimigos)}"
         )
-        self.screen.blit(debug, (10, 10))
+        surf_debug = self._fonte_hud.render(texto_debug, True, config.BLACK)
+        self.screen.blit(surf_debug, (10, 10))
 
-    def _draw_overlay(self):
-        """Overlay escuro semi-transparente sobre o cenário congelado."""
+    def _draw_overlay(self) -> None:
+        """Aplica o overlay escuro pré-renderizado sobre o cenário congelado."""
         self.screen.blit(self._overlay, (0, 0))
 
-    def _draw_game_over(self):
-        """Painel de Game Over centralizado sobre o overlay."""
+    def _draw_game_over(self) -> None:
+        """Painel de Game Over: título, score, high score e instruções."""
         SW, SH = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
-        cy = SH // 2
+        cx     = SW // 2
+        cy     = SH // 2
 
-        self._blit_centralizado(
-            self.fonte_titulo, "GAME OVER",
-            config.RED, SW // 2, cy - 110,
-        )
-        self._blit_centralizado(
-            self.fonte_subtitulo, f"Score: {self.score}",
-            config.WHITE, SW // 2, cy - 20,
-        )
-        if self.score >= self.high_score and self.score > 0:
-            self._blit_centralizado(
-                self.fonte_hud, "★  Novo High Score!  ★",
-                config.GOLD, SW // 2, cy + 25,
-            )
-        self._blit_centralizado(
-            self.fonte_subtitulo, f"High Score: {self.high_score}",
-            config.GOLD, SW // 2, cy + 60,
-        )
-        self._blit_centralizado(
-            self.fonte_hud, "[R] Tentar Novamente      [M] Menu Principal",
-            (200, 200, 200), SW // 2, cy + 115,
-        )
+        self._texto(self._fonte_titulo,    "GAME OVER",
+                    config.RED,   cx, cy - 110)
+        self._texto(self._fonte_subtitulo, f"Score: {self.score}",
+                    config.WHITE, cx, cy - 20)
 
-    def _draw_vitoria(self):
-        """Painel de vitória centralizado sobre o overlay."""
+        if self.score > 0 and self.score >= self.high_score:
+            self._texto(self._fonte_hud, "★  Novo High Score!  ★",
+                        config.GOLD, cx, cy + 25)
+
+        self._texto(self._fonte_subtitulo, f"High Score: {self.high_score}",
+                    config.GOLD,        cx, cy + 60)
+        self._texto(self._fonte_hud,       "[R] Tentar Novamente      [M] Menu",
+                    (200, 200, 200),     cx, cy + 115)
+
+    def _draw_vitoria(self) -> None:
+        """Painel de vitória: título, score final, high score e instruções."""
         SW, SH = config.SCREEN_WIDTH, config.SCREEN_HEIGHT
-        cy = SH // 2
+        cx     = SW // 2
+        cy     = SH // 2
 
-        self._blit_centralizado(
-            self.fonte_titulo, "VITÓRIA!",
-            config.YELLOW, SW // 2, cy - 110,
-        )
-        self._blit_centralizado(
-            self.fonte_subtitulo, "Todas as moedas coletadas!",
-            config.WHITE, SW // 2, cy - 25,
-        )
-        self._blit_centralizado(
-            self.fonte_subtitulo, f"Score Final: {self.score}",
-            config.WHITE, SW // 2, cy + 20,
-        )
+        self._texto(self._fonte_titulo,    "VITÓRIA!",
+                    config.YELLOW, cx, cy - 110)
+        self._texto(self._fonte_subtitulo, "Todas as moedas coletadas!",
+                    config.WHITE,  cx, cy - 25)
+        self._texto(self._fonte_subtitulo, f"Score Final: {self.score}",
+                    config.WHITE,  cx, cy + 20)
+
         if self.score >= self.high_score:
-            self._blit_centralizado(
-                self.fonte_hud, "★  Novo High Score!  ★",
-                config.GOLD, SW // 2, cy + 65,
-            )
-        self._blit_centralizado(
-            self.fonte_hud, "[R] Jogar Novamente      [M] Menu Principal",
-            (200, 200, 200), SW // 2, cy + 115,
-        )
+            self._texto(self._fonte_hud, "★  Novo High Score!  ★",
+                        config.GOLD, cx, cy + 65)
+
+        self._texto(self._fonte_hud, "[R] Jogar Novamente      [M] Menu",
+                    (200, 200, 200), cx, cy + 115)
 
     # ------------------------------------------------------------------
-    # Utilitários de renderização de texto
+    # Utilitário de texto com sombra
     # ------------------------------------------------------------------
 
-    def _blit_centralizado(self, fonte, texto, cor, cx, cy, ancora="center"):
-        """Renderiza texto centrado em (cx, cy) com sombra preta."""
-        self._blit_com_sombra(fonte, texto, cor, cx, cy, ancora)
-
-    def _blit_com_sombra(self, fonte, texto, cor, x, y, ancora="center"):
+    def _texto(
+        self,
+        fonte:  pygame.font.Font,
+        texto:  str,
+        cor:    tuple,
+        x:      int,
+        y:      int,
+        ancora: str = "center",
+    ) -> None:
         """
-        Renderiza texto com sombra 2px deslocada para legibilidade.
+        Renderiza texto com sombra preta deslocada 2px para legibilidade.
 
-        ancora pode ser "center", "topright", "topleft" —
-        passa direto para get_rect() como kwarg.
+        Por que renderizar duas vezes?
+        ────────────────────────────────
+        Texto colorido sobre fundo variável (céu, plataformas, inimigos)
+        perde contraste. A sombra em preto a 2px garante legibilidade em
+        qualquer cor de fundo ao custo de dois blits por chamada.
+
+        Parâmetros
+        ──────────
+        fonte   : fonte pré-carregada (evita SysFont por frame)
+        texto   : string a exibir
+        cor     : cor principal (R, G, B)
+        x, y    : posição de ancoragem em screen-space
+        ancora  : atributo de Rect para alinhamento
+                  ("center", "topright", "topleft", "midleft" …)
         """
-        surf   = fonte.render(texto, True, cor)
-        sombra = fonte.render(texto, True, config.BLACK)
-        rect   = surf.get_rect(**{ancora: (x, y)})
-        self.screen.blit(sombra, rect.move(2, 2))
-        self.screen.blit(surf,   rect)
+        surf_texto  = fonte.render(texto, True, cor)
+        surf_sombra = fonte.render(texto, True, config.BLACK)
+        rect        = surf_texto.get_rect(**{ancora: (x, y)})
+
+        self.screen.blit(surf_sombra, rect.move(2, 2))   # sombra levemente deslocada
+        self.screen.blit(surf_texto,  rect)               # texto na posição exata
 
     # ══════════════════════════════════════════════════════════════════
     # GAME LOOP
     # ══════════════════════════════════════════════════════════════════
 
-    def run(self):
+    def run(self) -> None:
+        """
+        Loop principal — executa até self.running = False.
+
+        clock.tick(FPS) dorme o tempo necessário para manter o FPS alvo
+        e retorna os milissegundos reais desde o último frame.
+        dt = ms / 1000 converte para segundos — unidade usada pela física.
+
+        A sequência handle → update → draw é mantida estritamente em
+        toda iteração: cada etapa tem exatamente uma responsabilidade.
+        """
         while self.running:
             dt = self.clock.tick(config.FPS) / 1000.0
 
@@ -643,6 +864,6 @@ class Game:
         sys.exit()
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     Game().run()
