@@ -20,7 +20,9 @@ Organização
   3. Taxa de Quadros
   4. Física do Jogador
   5. Paleta de Cores
-  6. Caminhos de Assets
+  6. Caminhos de Assets — Áudio e Fases
+  7. Caminhos de Assets — Sprites (Pixel Art)
+  8. Animação do Jogador — constantes de frame
 """
 
 import pathlib
@@ -110,7 +112,7 @@ BLUE     = ( 50, 100, 220)   # reservado para uso futuro (UI, efeitos)
 
 
 # ══════════════════════════════════════════════════════════════════════
-# 6. CAMINHOS DE ASSETS
+# 6. CAMINHOS DE ASSETS — ÁUDIO E FASES
 # ══════════════════════════════════════════════════════════════════════
 # Construídos com pathlib e convertidos para str para compatibilidade
 # com pygame.mixer.music.load() e pygame.image.load(), que não aceitam
@@ -126,7 +128,11 @@ BLUE     = ( 50, 100, 220)   # reservado para uso futuro (UI, efeitos)
 #   │   ├── sfx_morte.wav
 #   │   ├── sfx_stomp.wav
 #   │   └── sfx_vitoria.wav
-#   ├── sprites/          ← reservado para spritesheets futuras
+#   ├── sprites/
+#   │   ├── player_sheet.png   ← spritesheet do jogador (seção 7)
+#   │   ├── tileset.png        ← tiles do cenário
+#   │   ├── moeda.png          ← frames da moeda animada
+#   │   └── inimigo.png        ← spritesheet do inimigo
 #   ├── fase1.txt
 #   └── *.py
 
@@ -146,3 +152,68 @@ SFX_VITORIA: str = str(_AUDIO_DIR / "sfx_vitoria.wav")
 
 # Fases
 FASE_1: str = str(BASE_DIR / "fase1.txt")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 7. CAMINHOS DE ASSETS — SPRITES (PIXEL ART)
+# ══════════════════════════════════════════════════════════════════════
+# Todos os arquivos de imagem ficam em _SPRITES_DIR ("sprites/").
+# pygame.image.load() espera str; convertemos via str() por portabilidade.
+#
+# Convenção de spritesheet adotada neste projeto
+# ────────────────────────────────────────────────
+# Cada linha da imagem representa uma sequência de animação ("strip"):
+#
+#   player_sheet.png
+#   ┌─────────┬─────────┬─────────┬─────────┐
+#   │ parado0 │ parado1 │ parado2 │ parado3 │  ← linha 0  row=0 (idle)
+#   ├─────────┼─────────┼─────────┼─────────┤
+#   │ correr0 │ correr1 │ correr2 │ correr3 │  ← linha 1  row=1 (run)
+#   ├─────────┼─────────┼─────────┼─────────┤
+#   │  pulo0  │  pulo1  │  pulo2  │  pulo3  │  ← linha 2  row=2 (jump)
+#   └─────────┴─────────┴─────────┴─────────┘
+#   ↑ cada célula: FRAME_WIDTH × FRAME_HEIGHT pixels  (seção 8)
+#
+# Acesso a um frame específico em player.py:
+#   area        = pygame.Rect(col * FRAME_WIDTH, row * FRAME_HEIGHT,
+#                             FRAME_WIDTH, FRAME_HEIGHT)
+#   frame_surf  = sheet.subsurface(area)
+#
+# Para espelhar o personagem ao andar para a esquerda:
+#   frame_surf  = pygame.transform.flip(frame_surf, True, False)
+
+SPRITE_PLAYER:  str = str(_SPRITES_DIR / "player_sheet.png")
+SPRITE_CENARIO: str = str(_SPRITES_DIR / "tileset.png")
+SPRITE_MOEDA:   str = str(_SPRITES_DIR / "moeda.png")
+SPRITE_INIMIGO: str = str(_SPRITES_DIR / "inimigo.png")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 8. ANIMAÇÃO DO JOGADOR — CONSTANTES DE FRAME
+# ══════════════════════════════════════════════════════════════════════
+# Usadas por player.py para recortar frames da spritesheet e controlar
+# o ritmo de troca. Alterar aqui ajusta a animação em todo o projeto.
+#
+# Relação entre constantes e a imagem PNG
+# ─────────────────────────────────────────
+#   FRAME_WIDTH × FRAME_HEIGHT  →  tamanho de cada célula no arquivo
+#   VELOCIDADE_ANIMACAO         →  segundos por frame
+#                                  (FPS_ANIM equivalente = 1 / 0.15 ≈ 6.7 fps)
+#
+# Exemplos de FPS de animação resultante:
+#   VELOCIDADE_ANIMACAO = 0.08 → 12.5 fps  (corrida acelerada)
+#   VELOCIDADE_ANIMACAO = 0.10 → 10.0 fps  (corrida padrão)
+#   VELOCIDADE_ANIMACAO = 0.15 →  6.7 fps  (valor adotado — suave para pixel art)
+#   VELOCIDADE_ANIMACAO = 0.20 →  5.0 fps  (movimento lento/pesado)
+#
+# Por que FRAME_WIDTH ≠ TILE_SIZE?
+# ─────────────────────────────────
+# TILE_SIZE (40 px) é a grade do mundo/mapa — define colisão e posição.
+# FRAME_WIDTH/HEIGHT (32 px) é a resolução interna do sprite de pixel art.
+# O sprite é redimensionado (pygame.transform.scale) para o tamanho de
+# colisão do Player (WIDTH × HEIGHT) na hora do blit, desacoplando
+# completamente arte e física. Ajustar FRAME_WIDTH não altera hitboxes.
+
+FRAME_WIDTH:         int   = 32     # largura  de cada frame na spritesheet (px)
+FRAME_HEIGHT:        int   = 32     # altura   de cada frame na spritesheet (px)
+VELOCIDADE_ANIMACAO: float = 0.15   # segundos entre trocas de frame
