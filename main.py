@@ -10,20 +10,42 @@ MÁQUINA DE ESTADOS FINITA (FSM)
     ┌─────────┐ ESPAÇO  ┌──────────┐  morte   ┌───────────┐
     │  MENU   │────────►│ JOGANDO  │─────────►│ GAME_OVER │
     └─────────┘         └──────────┘          └───────────┘
-         ▲                   │                  R│    │M
-         │                   │ todas moedas      ▼    │
-         │                   ▼                ┌──────┐│
-         │              ┌─────────┐     R     │reset ││
-         └──────M───────│ VITORIA │──────────►│jogo  ││
-                        └─────────┘           └──────┘│
-                              │M                      │
-                              └──────────────────►────┘
-                                              _ir_para_menu()
+         ▲               │        │             R│    │M
+         │    moedas=0   │        │              ▼    │
+         │  fase<TOTAL   │        │           ┌──────┐│
+         │    ┌──────────┘        │           │reset ││
+         │    ▼ _avancar_fase()   │ moedas=0  │jogo  ││
+         │  JOGANDO(próx.fase) ◄──┘ fase=TOTAL└──────┘│
+         │                        │                   │
+         │                        ▼                   │
+         │                   ┌─────────┐        R     │
+         └────────M───────── │ VITORIA │──────────────┘
+                             └─────────┘
+                                  │M
+                                  └──► _ir_para_menu()
 
-Cada transição é uma chamada a um método dedicado (_resetar_jogo,
-_ir_para_game_over, _ir_para_vitoria, _ir_para_menu). Nenhuma transição
-acontece diretamente em handle_events() — isso mantém a lógica de
-transição testável e centralizada.
+Cada transição é uma chamada a um método dedicado. handle_events()
+nunca altera self.estado diretamente — centraliza efeitos colaterais
+(áudio, score, construção de nível) e torna as transições testáveis.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROGRESSÃO DE CAMPANHA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+O jogo possui TOTAL_FASES fases numeradas de 1 a N. O arquivo de cada
+fase é resolvido dinamicamente por _arquivo_fase_atual():
+
+    fase_atual=1  →  "fase1.txt"
+    fase_atual=2  →  "fase2.txt"
+    fase_atual=3  →  "fase3.txt"
+
+Ao zerar as moedas de uma fase intermediária, _avancar_fase() incrementa
+fase_atual, reconstrói o nível (sem resetar o score) e toca o SFX de
+transição. Ao zerar a última fase, _ir_para_vitoria() é chamado — encerra
+a campanha com a tela de vitória final.
+
+_resetar_jogo(reiniciar_campanha=True) é chamado ao pressionar R no
+GAME_OVER/VITORIA ou ao iniciar pelo MENU: reseta fase_atual=1 e score=0.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SEPARAÇÃO DE RESPONSABILIDADES NO GAME LOOP
@@ -160,8 +182,25 @@ class Game:
         self.running: bool              = True
 
         # ── FSM ───────────────────────────────────────────────────────
-        self.estado:     str = "MENU"
-        self.high_score: int = 0
+        self.estado:      str = "MENU"
+        self.high_score:  int = 0
+
+        # ── Progressão de campanha ────────────────────────────────────
+        # TOTAL_FASES é uma constante de instância (não de classe) porque
+        # pode variar por perfil de dificuldade no futuro sem alterar a
+        # lógica de nenhum outro módulo.
+        self.TOTAL_FASES: int = 3
+        self.fase_atual:  int = 1
+
+        # ── Sistema de vidas ──────────────────────────────────────────
+        # vidas_max: limite superior; reutilizado em _resetar_jogo()
+        #            para restaurar vidas ao valor correto sem magic number.
+        # vidas:     contagem atual, decrementada por _checar_colisao_inimigos()
+        #            quando tomar_dano() retorna True.
+        #            Vidas persistem entre fases (reiniciar_campanha=False);
+        #            resetam ao recomeçar a campanha (reiniciar_campanha=True).
+        self.vidas_max: int = 3
+        self.vidas:     int = self.vidas_max
 
         # ── Áudio ─────────────────────────────────────────────────────
         self._musica_atual: str = ""
@@ -267,12 +306,18 @@ class Game:
     # CONSTRUÇÃO E CARREGAMENTO DE FASE
     # ══════════════════════════════════════════════════════════════════
 
-    def _construir_nivel(self, arquivo: str = config.FASE_1) -> None:
+    def _construir_nivel(self, arquivo: str | None = None) -> None:
         """
         Cria (ou reconstrói) todos os objetos do nível a partir do arquivo.
 
         Separado de __init__ para que _resetar_jogo() possa reconstruir
         o mundo sem recriar a janela (evita flash de display.set_mode).
+
+        Parâmetro arquivo
+        ──────────────────
+        Quando None (padrão), usa _arquivo_fase_atual() — que resolve
+        dinamicamente "fase{self.fase_atual}.txt". Aceitar o caminho
+        explícito permite testes unitários sem alterar self.fase_atual.
 
         Gerenciamento de memória — anti-leak
         ──────────────────────────────────────
@@ -288,6 +333,7 @@ class Game:
 
         Ordem obrigatória: empty() ANTES de reatribuir os grupos.
         """
+        arquivo = arquivo or self._arquivo_fase_atual()
         self.score: int = 0
 
         # Limpa grupos existentes antes de recriar (anti-leak)
@@ -428,10 +474,88 @@ class Game:
     # os efeitos colaterais (áudio, score, construção de nível) e torna
     # as transições testáveis de forma independente.
 
-    def _resetar_jogo(self) -> None:
-        """Reconstrói o nível e transita para JOGANDO. Preserva high_score."""
-        self._construir_nivel()
+    def _arquivo_fase_atual(self) -> str:
+        """
+        Resolve dinamicamente o caminho do arquivo de mapa para a fase
+        corrente usando uma f-string.
+
+        Exemplos:
+            fase_atual=1  →  "<BASE_DIR>/fase1.txt"
+            fase_atual=2  →  "<BASE_DIR>/fase2.txt"
+            fase_atual=3  →  "<BASE_DIR>/fase3.txt"
+
+        Usar str(config.BASE_DIR / ...) garante portabilidade entre
+        sistemas operacionais (/ em vez de \\ no Windows).
+        """
+        return str(config.BASE_DIR / f"fase{self.fase_atual}.txt")
+
+    def _resetar_jogo(self, reiniciar_campanha: bool = True) -> None:
+        """
+        Reconstrói o nível e transita para JOGANDO.
+
+        Parâmetro reiniciar_campanha
+        ─────────────────────────────
+        True  (padrão) — chamado pelo MENU ou R no GAME_OVER/VITORIA:
+              reseta fase_atual=1 e vidas=vidas_max para começar a
+              campanha do início com vidas completas.
+
+        False — chamado por _avancar_fase():
+              mantém fase_atual já incrementado e preserva vidas atuais
+              — o jogador carrega o estado de saúde que conquistou nas
+              fases anteriores. Score também é preservado.
+
+        Em ambos os casos, _construir_nivel() recria todos os grupos
+        (empty() → anti-leak) e recria o Player no spawn da nova fase.
+        O high_score nunca é resetado — persiste durante a sessão.
+        """
+        if reiniciar_campanha:
+            self.fase_atual = 1
+            self.vidas      = self.vidas_max   # vidas cheias ao recomeçar
+
+        self._construir_nivel()   # usa _arquivo_fase_atual() internamente
+
+        # Preserva score quando avançando de fase (reiniciar_campanha=False)
+        # mas zera quando recomeçando do zero (reiniciar_campanha=True).
+        # _construir_nivel() sempre zera; re-atribuímos aqui se necessário.
+        # Nota: o score já foi zerado em _construir_nivel(); como queremos
+        # preservar apenas no avanço de fase, o score acumulado é passado
+        # explicitamente por _avancar_fase() após a chamada.
         self.estado = "JOGANDO"
+
+    def _avancar_fase(self) -> None:
+        """
+        Incrementa fase_atual e carrega o próximo nível sem resetar o score.
+
+        Fluxo
+        ──────
+        1. Guarda o score atual (será zerado por _construir_nivel).
+        2. Incrementa fase_atual.
+        3. Chama _resetar_jogo(reiniciar_campanha=False) — reconstrói o
+           nível já com o novo fase_atual, sem voltar à fase 1.
+        4. Restaura o score acumulado para que o jogador carregue a
+           pontuação conquistada nas fases anteriores.
+        5. Toca o SFX de vitória como feedback de conclusão de fase.
+        6. Reinicia a música da fase para dar frescor ao novo nível.
+
+        Por que guardar/restaurar o score?
+        ────────────────────────────────────
+        _construir_nivel() sempre executa ``self.score = 0`` (inicializa
+        limpo para o nível). Guardar antes e restaurar depois é a forma
+        mais simples de preservar o score sem alterar a lógica interna
+        de _construir_nivel() — mantém o contrato claro: cada nível
+        começa do zero internamente; quem decide agregar é a campanha.
+        """
+        score_acumulado = self.score          # 1. guarda antes do reset
+
+        self.fase_atual += 1                  # 2. avança a fase
+        self._resetar_jogo(reiniciar_campanha=False)  # 3. constrói novo nível
+
+        self.score = score_acumulado          # 4. restaura pontuação
+
+        self._tocar_som("vitoria")            # 5. SFX de conclusão de fase
+        self._tocar_musica(                   # 6. reinicia trilha da fase
+            config.MUSICA_FASE, self._VOL_MUSICA_FASE
+        )
 
     def _ir_para_game_over(self) -> None:
         """Derrota: atualiza high_score, para música, dispara SFX, muda estado."""
@@ -512,7 +636,20 @@ class Game:
                 self._tocar_som("stomp")
 
         if not pisou_algum:
-            self._ir_para_game_over()
+            # ── Toque lateral ou por baixo — tomar_dano() decide ─────────
+            # tomar_dano() retorna False se o jogador já está invulnerável
+            # (i-frames ativos) — nenhuma vida é decrementada nem SFX tocado.
+            # Retorna True apenas se o dano foi efetivamente aplicado.
+            if self.player.tomar_dano():
+                self.vidas -= 1
+                self._tocar_som("morte")
+
+                if self.vidas <= 0:
+                    # Sem vidas: encerra a partida
+                    self._ir_para_game_over()
+                # Com vidas restantes: jogador recebe knockback (aplicado em
+                # tomar_dano()) e fica invulnerável por INVULNERAVEL_DURATION —
+                # sem transição de estado, o jogo continua.
 
     # ══════════════════════════════════════════════════════════════════
     # 1. EVENTOS — roteados pelo estado atual da FSM
@@ -607,11 +744,21 @@ class Game:
         # ── Combate com inimigos ──────────────────────────────────────
         self._checar_colisao_inimigos()
 
-        # ── Condição de vitória ───────────────────────────────────────
-        # `not self.moedas` é equivalente a `len(self.moedas) == 0`
-        # mas mais idiomático e sem chamada de função.
+        # ── Condição de fim de fase ───────────────────────────────────
+        # `not self.moedas` é idiomático para len == 0 e evita chamada
+        # de função. A verificação acontece APÓS a coleta — garante que
+        # o score da última moeda está contabilizado antes da transição.
         if not self.moedas:
-            self._ir_para_vitoria()
+            if self.fase_atual < self.TOTAL_FASES:
+                # ── Fase intermediária: avança para a próxima ─────────
+                # _avancar_fase() preserva o score, incrementa fase_atual,
+                # reconstrói o nível e toca o SFX de conclusão.
+                # O estado permanece "JOGANDO" — sem tela de transição,
+                # a câmera corta imediatamente para o novo mapa.
+                self._avancar_fase()
+            else:
+                # ── Última fase: encerra a campanha ───────────────────
+                self._ir_para_vitoria()
             return   # câmera não precisa atualizar — frame de transição
 
         # ── Câmera ────────────────────────────────────────────────────
@@ -708,21 +855,43 @@ class Game:
         self.player.draw(self.screen, self.camera.aplicar(self.player.rect))
 
     def _draw_hud(self) -> None:
-        """HUD em gameplay: score (canto direito), barra de progresso e debug."""
+        """HUD em gameplay: vidas (esquerda), fase (centro), score (direita), barra de moedas."""
         SW = config.SCREEN_WIDTH
 
-        # Score — canto superior direito
+        # ── Vidas — canto superior esquerdo ───────────────────────────
+        # Coração Unicode (♥) repetido N vezes: legível, sem assets.
+        # Corações cinzas representam vidas perdidas — dá contexto visual
+        # imediato do estado de saúde sem precisar de números.
+        coracoes_cheios  = "♥" * self.vidas
+        coracoes_vazios  = "♡" * (self.vidas_max - self.vidas)
+        texto_vidas      = coracoes_cheios + coracoes_vazios
+
+        self._texto(
+            self._fonte_score, texto_vidas,
+            config.RED, 10, 10, ancora="topleft",
+        )
+
+        # ── Indicador de fase — centro superior ───────────────────────
+        # Renderizado depois das vidas para garantir que a sombra das
+        # vidas não sobreponha o texto de fase em resoluções estreitas.
+        self._texto(
+            self._fonte_hud,
+            f"FASE  {self.fase_atual} / {self.TOTAL_FASES}",
+            config.WHITE, SW // 2, 10, ancora="midtop",
+        )
+
+        # ── Score — canto superior direito ────────────────────────────
         self._texto(
             self._fonte_score, f"Score: {self.score}",
             config.YELLOW, SW - 10, 10, ancora="topright",
         )
 
-        # Barra de progresso de moedas coletadas
+        # ── Barra de progresso de moedas ──────────────────────────────
         coletadas  = self._total_moedas - len(self.moedas)
         barra_w    = 160
         barra_h    = 10
         barra_x    = 10
-        barra_y    = 38
+        barra_y    = 52   # deslocado para baixo das vidas (era 38)
 
         # Fundo cinza da barra
         pygame.draw.rect(
@@ -747,14 +916,14 @@ class Game:
         )
         self.screen.blit(surf_moedas, (barra_x, barra_y + 14))
 
-        # Linha de debug — canto superior esquerdo
+        # ── Linha de debug — logo abaixo da legenda de moedas ─────────
         texto_debug = (
             f"X: {int(self.player.x)}  "
             f"anim: {self.player.estado_animacao}[{self.player.frame_atual}]  "
             f"inimigos: {len(self.inimigos)}"
         )
         surf_debug = self._fonte_hud.render(texto_debug, True, config.BLACK)
-        self.screen.blit(surf_debug, (10, 10))
+        self.screen.blit(surf_debug, (barra_x, barra_y + 30))
 
     def _draw_overlay(self) -> None:
         """Aplica o overlay escuro pré-renderizado sobre o cenário congelado."""
