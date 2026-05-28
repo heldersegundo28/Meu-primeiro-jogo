@@ -109,6 +109,7 @@ não carregadas na RAM). pygame.mixer.Sound ocupa canais polyphônicos
 
 from __future__ import annotations
 
+import random
 import sys
 import pygame
 
@@ -201,6 +202,16 @@ class Game:
         #            resetam ao recomeçar a campanha (reiniciar_campanha=True).
         self.vidas_max: int = 3
         self.vidas:     int = self.vidas_max
+
+        # ── Screen Shake ──────────────────────────────────────────────
+        # shake_timer:       segundos restantes de tremor. Decrementado por
+        #                    dt em update(); zero significa tela estável.
+        # shake_intensidade: deslocamento máximo em pixels a cada frame.
+        #                    Quanto maior, mais violento o tremor.
+        # Ambos são manipulados exclusivamente por disparar_shake() e
+        # update() — nenhum outro método deve escrevê-los diretamente.
+        self.shake_timer:       float = 0.0
+        self.shake_intensidade: int   = 0
 
         # ── Áudio ─────────────────────────────────────────────────────
         self._musica_atual: str = ""
@@ -580,6 +591,51 @@ class Game:
         self._tocar_musica(config.MUSICA_MENU, self._VOL_MUSICA_MENU)
 
     # ══════════════════════════════════════════════════════════════════
+    # SCREEN SHAKE
+    # ══════════════════════════════════════════════════════════════════
+
+    def disparar_shake(
+        self,
+        duracao:     float = 0.30,
+        intensidade: int   = 8,
+    ) -> None:
+        """
+        Ativa o efeito de tremor de tela (screen shake).
+
+        Screen shake é um dos recursos de game feel mais eficazes:
+        um impacto físico no mundo do jogo causa um impacto perceptual
+        na câmera — o jogador SENTE o dano, não apenas o vê no HUD.
+        Usado em jogos desde os anos 80 (ex.: Earthworm Jim, Mega Man X).
+
+        Implementação: deslocamento aleatório a cada frame
+        ──────────────────────────────────────────────────
+        Enquanto shake_timer > 0, _draw_jogo() sorteia um offset em X e Y
+        dentro de [-intensidade, +intensidade] e desloca todos os blits do
+        cenário por esse vetor. O offset é RE-SORTEADO a cada frame (não
+        interpolado) — isso produz o tremor irregular característico do
+        efeito "câmera de impacto", em vez de uma oscilação suave.
+
+        Por que deslocar os blits e não mover a câmera?
+        ─────────────────────────────────────────────────
+        Mover self.camera.offset_x afetaria a física (retângulos de
+        colisão lidos pela câmera ficariam desalinhados). Aplicar o
+        deslocamento apenas nos blits mantém physics e visuals separados:
+        a câmera em world-space não muda; só o que é desenhado na tela.
+
+        Parâmetros
+        ──────────
+        duracao     : segundos de tremor (0.30 s ≈ 18 frames a 60 FPS)
+        intensidade : deslocamento máximo em pixels por frame
+                      Valores recomendados por tipo de evento:
+                        dano leve    → intensidade=5,  duracao=0.20
+                        dano grave   → intensidade=8,  duracao=0.30  ← padrão
+                        explosão     → intensidade=14, duracao=0.45
+                        game over    → intensidade=12, duracao=0.50
+        """
+        self.shake_timer       = duracao
+        self.shake_intensidade = intensidade
+
+    # ══════════════════════════════════════════════════════════════════
     # COLISÕES DE COMBATE
     # ══════════════════════════════════════════════════════════════════
 
@@ -643,9 +699,11 @@ class Game:
             if self.player.tomar_dano():
                 self.vidas -= 1
                 self._tocar_som("morte")
+                self.disparar_shake()   # feedback tátil de dano
 
                 if self.vidas <= 0:
-                    # Sem vidas: encerra a partida
+                    # Último coração: shake mais intenso antes do game over
+                    self.disparar_shake(duracao=0.50, intensidade=12)
                     self._ir_para_game_over()
                 # Com vidas restantes: jogador recebe knockback (aplicado em
                 # tomar_dano()) e fica invulnerável por INVULNERAVEL_DURATION —
@@ -717,10 +775,19 @@ class Game:
         2. Física dos inimigos (patrulha independente)
         3. SFX de pulo         (One-Frame Event Flag — lida e zerada aqui)
         4. Coleta de moedas    (score + SFX)
-        5. Combate com inimigos (stomp ou game over)
+        5. Combate com inimigos (stomp ou tomar_dano + shake)
         6. Condição de vitória (verificada após coleta — score atualizado)
-        7. Câmera              (sempre depois do jogador — posição final)
+        7. Screen shake        (decrementado aqui — fora do guard JOGANDO
+                                para continuar durante GAME_OVER/VITORIA)
+        8. Câmera              (sempre depois do jogador — posição final)
         """
+        # ── Screen shake — decrementado em TODOS os estados ───────────
+        # O shake é disparado durante JOGANDO mas deve continuar visível
+        # nas transições para GAME_OVER — por isso fica fora do guard.
+        # max(0.0, ...) garante que o timer nunca fique negativo.
+        if self.shake_timer > 0.0:
+            self.shake_timer = max(0.0, self.shake_timer - dt)
+
         if self.estado != "JOGANDO":
             return
 
@@ -832,27 +899,65 @@ class Game:
 
     def _draw_jogo(self) -> None:
         """
-        Renderiza o cenário completo com offset de câmera.
+        Renderiza o cenário completo com offset de câmera e screen shake.
 
-        Por que não usar Group.draw()?
-        ───────────────────────────────
-        Group.draw() usa sprite.rect diretamente (world-space). A câmera
-        precisa de um Rect ajustado (screen-space) via Camera.aplicar(),
-        que retorna um novo Rect sem modificar o original — preservando
-        a física. Loop manual é necessário para interpor o offset.
+        Pipeline de transformação por sprite
+        ─────────────────────────────────────
+        world-space (rect)
+            ↓  Camera.aplicar()     → subtrai offset_x da câmera
+        screen-space (rect_tela)
+            ↓  .move(ox, oy)        → desloca pelo vetor de shake
+        draw-space (rect_final)
+            ↓  surface.blit()       → pixel na tela
+
+        Camera.aplicar() retorna um novo Rect sem modificar o original —
+        world-space intocado para a física. .move() também retorna um
+        novo Rect — screen-space intocado para o HUD (que não tremula).
+
+        Por que o HUD NÃO treme?
+        ──────────────────────────
+        _draw_hud() é chamado APÓS _draw_jogo() e usa coordenadas fixas
+        de screen-space (não passa por esta função). Tremular o HUD seria
+        desorientador — o jogador precisa ler as vidas mesmo durante o
+        impacto. Separar os dois draws resolve o problema naturalmente.
+
+        Por que random.randint e não seno/cosseno?
+        ────────────────────────────────────────────
+        Tremor senoidal produz oscilação suave e previsível — parece
+        uma câmera em movimento, não um impacto. random.randint gera
+        deslocamentos completamente irregulares a cada frame — parece
+        um choque físico real. Para screen shake de dano, o ruído
+        aleatório é sempre preferível à oscilação periódica.
         """
         self.screen.fill(config.SKY_BLUE)
 
+        # ── Vetor de shake ────────────────────────────────────────────
+        # Sorteado uma vez por frame e reutilizado em todos os blits —
+        # garante que todos os elementos se movem juntos (coerência visual).
+        # Se sorteássemos individualmente por sprite, cada objeto tremeria
+        # em direções diferentes — efeito de "tela estilhaçada", não tremor.
+        if self.shake_timer > 0.0:
+            ox = random.randint(-self.shake_intensidade, self.shake_intensidade)
+            oy = random.randint(-self.shake_intensidade, self.shake_intensidade)
+        else:
+            ox, oy = 0, 0   # sem shake: deslocamento nulo
+
+        # ── Renderização com offset ───────────────────────────────────
+        # camera.aplicar(rect)  →  screen-space
+        # .move(ox, oy)         →  screen-space + shake  (novo Rect, sem mutação)
         for spr in self.plataformas:
-            self.screen.blit(spr.image, self.camera.aplicar(spr.rect))
+            self.screen.blit(spr.image, self.camera.aplicar(spr.rect).move(ox, oy))
 
         for spr in self.moedas:
-            self.screen.blit(spr.image, self.camera.aplicar(spr.rect))
+            self.screen.blit(spr.image, self.camera.aplicar(spr.rect).move(ox, oy))
 
         for spr in self.inimigos:
-            self.screen.blit(spr.image, self.camera.aplicar(spr.rect))
+            self.screen.blit(spr.image, self.camera.aplicar(spr.rect).move(ox, oy))
 
-        self.player.draw(self.screen, self.camera.aplicar(self.player.rect))
+        self.player.draw(
+            self.screen,
+            self.camera.aplicar(self.player.rect).move(ox, oy),
+        )
 
     def _draw_hud(self) -> None:
         """HUD em gameplay: vidas (esquerda), fase (centro), score (direita), barra de moedas."""
