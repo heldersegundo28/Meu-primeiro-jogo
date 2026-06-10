@@ -67,13 +67,15 @@ class Camera:
     2. Travar o scroll nas bordas do mundo (clamp).
     3. Converter qualquer Rect de world-space para screen-space via
        o método ``aplicar``, sem modificar o Rect original.
+    4. (Opcional) Bias preditivo via ``update_com_bias`` — a câmera
+       "olha à frente" na direção do movimento.
 
     Atributo público
     ────────────────
     offset_x : float
         Deslocamento horizontal atual em pixels.
         Lido por ``Game._draw_jogo`` para ajustar cada ``blit``.
-        Escrito apenas por ``update`` e ``redimensionar``.
+        Escrito apenas por ``update``/``update_com_bias`` e ``redimensionar``.
 
     Imutabilidade dos Rects de mundo
     ─────────────────────────────────
@@ -125,6 +127,11 @@ class Camera:
             0.0, float(largura_mundo - config.SCREEN_WIDTH)
         )
 
+        # Bias preditivo atual (acumulado via lerp em update_com_bias).
+        # Separado de offset_x para que update() (snap) nunca herde
+        # um bias residual de update_com_bias().
+        self._bias_atual: float = 0.0
+
     # ------------------------------------------------------------------
     def update(self, alvo: pygame.Rect) -> None:
         """
@@ -154,6 +161,80 @@ class Camera:
             Normalmente ``player.rect``.
         """
         offset_desejado: float = float(alvo.centerx) - self._ancora_x
+        self.offset_x = max(
+            self._offset_min,
+            min(offset_desejado, self._offset_max),
+        )
+
+    # ------------------------------------------------------------------
+    def update_com_bias(
+        self,
+        alvo:    pygame.Rect,
+        vel_x:   float,
+        dt:      float,
+        fator:   float = 0.25,
+        lerp:    float = 5.0,
+        max_px:  float = 80.0,
+    ) -> None:
+        """
+        Câmera Juice com bias preditivo baseado na velocidade horizontal.
+
+        Conceito: Lead / Predictive Camera
+        ────────────────────────────────────
+        Em vez de manter o jogador exatamente no centro, a câmera
+        "olha um pouco à frente" na direção do movimento — revelando
+        mais terreno à frente e menos atrás.
+
+        Diagrama de bias:
+            vel_x = +160 (correndo →)
+            bias_alvo = +160 × 0.25 = +40px
+            câmera avança 40px à frente do jogador
+
+            ┌──────────────────────────────────────────┐
+            │   ← 40px →   [calango]                  │
+            │  (revelado    (não mais   (mais visível) │
+            │   a mais)      no centro)                │
+            └──────────────────────────────────────────┘
+
+        Interpolação suave (lerp × dt)
+        ────────────────────────────────
+        O bias não salta para o alvo imediatamente — interpola via:
+            bias_atual += (bias_alvo - bias_atual) × lerp × dt
+
+        Isso evita trancos ao mudar de direção: o bias desliza
+        suavemente de +40 → 0 → -40 ao inverter o movimento.
+
+        Separação bias / offset_x
+        ───────────────────────────
+        O bias é acumulado em ``self._bias_atual`` (não em offset_x
+        diretamente). O offset final é calculado como:
+            offset_x = clamp(centro_alvo - ancora_x + bias_atual, min, max)
+
+        Isso garante que o clamp de bordas leve o bias em conta —
+        a câmera não ultrapassará as bordas do mundo mesmo com bias alto.
+
+        Parâmetros
+        ──────────
+        alvo     : Rect do jogador (world-space)
+        vel_x    : velocidade horizontal do jogador (telemetria)
+        dt       : delta time em segundos
+        fator    : proporção vel_x → bias em pixels (default 0.25)
+                   vel_x=160 → bias_alvo=40px
+        lerp     : taxa de interpolação do bias por segundo (default 5.0)
+                   Maior = câmera mais responsiva; menor = mais suave
+        max_px   : limite absoluto do bias em pixels (default 80px)
+                   Impede que corrida a alta velocidade empurre demais a câmera
+        """
+        # ── Calcula o bias alvo proporcional à velocidade ─────────────
+        bias_alvo: float = max(-max_px, min(vel_x * fator, max_px))
+
+        # ── Lerp suave do bias atual → alvo ────────────────────────────
+        # lerp(a, b, t) = a + (b - a) × t   com   t = lerp × dt
+        self._bias_atual += (bias_alvo - self._bias_atual) * lerp * dt
+
+        # ── Offset final: centro + bias, depois clamp ──────────────────
+        offset_desejado = (float(alvo.centerx) - self._ancora_x
+                           + self._bias_atual)
         self.offset_x = max(
             self._offset_min,
             min(offset_desejado, self._offset_max),

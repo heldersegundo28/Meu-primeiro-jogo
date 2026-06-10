@@ -564,3 +564,361 @@ class Inimigo(pygame.sprite.Sprite):
 
         # ── Passo 5: animação ─────────────────────────────────────────
         self._atualizar_animacao(dt)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# CHECKPOINT
+# ══════════════════════════════════════════════════════════════════════
+
+class Checkpoint(pygame.sprite.Sprite):
+    """
+    Marcador de ponto de retorno — posição de respawn alternativa ao spawn
+    original da fase.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    RESPONSABILIDADE
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    Este sprite SÓ conhece sua própria posição e estado visual.
+    Quem decide ativar, salvar e usar o respawn é o Game (main.py).
+    O Player nunca importa ou referencia Checkpoint.
+
+    Dependências: apenas pygame. Nenhuma importação de config, player ou
+    main — zero risco de dependência circular.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    CONTRATO PÚBLICO
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+      self.rect  : pygame.Rect   — hitbox e posição em world-space
+      self.image : pygame.Surface — frame atual (idle ou ativo)
+      self.ativo : bool           — True após primeiro toque do jogador
+
+    O Game usa self.rect para colisão e self.ativo para decidir se é o
+    respawn mais recente. Não há mais estado público além desses três.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    VISUAL PROCEDURAL (sem assets externos)
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    Dois estados visuais construídos proceduralmente em __init__:
+
+      idle  — bandeira cinza-azulada: checkpoint existe mas não foi tocado
+      ativo — bandeira amarela dourada: checkpoint ativado pelo jogador
+
+    Construídos uma única vez em __init__ e armazenados como _img_idle
+    e _img_ativo. A troca em ativar() é uma atribuição simples — sem
+    Surface.fill() no loop quente, sem alocação por frame.
+
+    Estrutura visual (16×32 px padrão):
+        ┌──────────────────────┐
+        │  poste vertical      │  linha cinza-escuro, 2px
+        │  bandeira no topo    │  retângulo colorido 10×8 px
+        │  base pequena        │  retângulo escuro 6×4 px
+        └──────────────────────┘
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    PONTO DE SPAWN REAL (respawn_x / respawn_y)
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    O Player deve reaparacer COM OS PÉS NA BASE do checkpoint, não no
+    topleft do rect. Por isso o Game lê (respawn_x, respawn_y) — que
+    apontam para o centro-base do sprite — e não rect.topleft.
+
+    O Player é instanciado com Player(x, y) onde (x,y) é o TOPLEFT do
+    hitbox. Portanto:
+
+        respawn_x = rect.centerx - Player.WIDTH // 2
+        respawn_y = rect.bottom  - Player.HEIGHT
+
+    Esses valores são calculados uma vez em __init__ e armazenados como
+    atributos Read-Only. O Game nunca recalcula — apenas lê.
+    """
+
+    # ── Dimensões visuais ─────────────────────────────────────────────
+    # Separadas da hitbox para facilitar ajuste de arte futura.
+    # A hitbox (HITBOX_W × HITBOX_H) define a colisão; o visual pode ser
+    # maior ou menor sem afetar o gameplay.
+    HITBOX_W: int = 16    # largura da zona de ativação (pixels)
+    HITBOX_H: int = 32    # altura da zona de ativação (pixels)
+
+    # ── Cores procedurais (estado idle e ativo) ───────────────────────
+    _COR_POSTE:        tuple = ( 80,  80,  90)   # cinza-escuro
+    _COR_BASE:         tuple = ( 60,  60,  70)   # base do poste
+    _COR_BANDEIRA_OFF:      tuple = (100, 120, 160)   # cinza-azulado (idle)
+    _COR_BANDEIRA_ON:       tuple = (255, 200,  50)   # amarelo dourado: respawn atual
+    _COR_BANDEIRA_ANTERIOR: tuple = ( 80, 160,  80)   # verde apagado: visitado, não atual
+
+    def __init__(self, x: int, y: int) -> None:
+        """
+        Parâmetros
+        ──────────
+        x, y : topleft em coordenadas de mundo (pixels).
+                O loader garante que esses valores já estão no espaço
+                lógico do motor (col × TILE_SIZE, row × TILE_SIZE).
+        """
+        super().__init__()
+
+        # ── Constrói as três surfaces uma única vez ──────────────────
+        # idle     : bandeira cinza-azulada — ainda não tocado
+        # ativo    : bandeira amarela dourada — respawn atual
+        # anterior : bandeira verde apagada — visitado mas superado por novo checkpoint
+        self._img_idle     = self._construir_surface(ativo=False)
+        self._img_ativo    = self._construir_surface(ativo=True)
+        self._img_anterior = self._construir_surface(ativo=False,
+                                                     cor_override=self._COR_BANDEIRA_ANTERIOR)
+
+        # ── Estado inicial: não ativado ───────────────────────────────
+        self.ativo: bool = False
+        self.image       = self._img_idle
+
+        # ── Rect de hitbox em world-space ─────────────────────────────
+        self.rect: pygame.Rect = pygame.Rect(x, y, self.HITBOX_W, self.HITBOX_H)
+
+        # ── Posição de respawn: pés do Player na base do checkpoint ───
+        # Importamos Player.WIDTH/HEIGHT via duck typing: como a classe
+        # Player vive em player.py (que não é importado aqui para evitar
+        # dependência circular), usamos valores físicos fixos.
+        # Se o tamanho do Player mudar, estes offsets devem ser ajustados.
+        # Alternativa futura: passar player_width/height como parâmetro.
+        _PLAYER_W = 40   # Player.WIDTH  — mantido em sincronia manual
+        _PLAYER_H = 60   # Player.HEIGHT — mantido em sincronia manual
+
+        self.respawn_x: float = float(self.rect.centerx - _PLAYER_W // 2)
+        self.respawn_y: float = float(self.rect.bottom  - _PLAYER_H)
+
+    # ------------------------------------------------------------------
+    # CONSTRUÇÃO VISUAL
+    # ------------------------------------------------------------------
+
+    def _construir_surface(
+        self,
+        ativo: bool,
+        cor_override: tuple | None = None,
+    ) -> pygame.Surface:
+        """
+        Gera a Surface do checkpoint proceduralmente.
+
+        Retorna uma Surface SRCALPHA (transparente fora do sprite) com:
+          - Poste vertical centralizado
+          - Bandeira no topo (cor varia pelo parâmetro ativo)
+          - Base no rodapé do poste
+
+        Parâmetros
+        ──────────
+        ativo        : True = bandeira amarela (respawn atual)
+        cor_override : se fornecida, usa esta cor em vez da padrão
+                       (ex: verde apagado para estado 'anterior')
+
+        Por que SRCALPHA?
+        ─────────────────
+        O checkpoint tem forma de bandeira — não é retangular. SRCALPHA
+        permite que os cantos da bounding box fiquem transparentes,
+        evitando o efeito de "caixa sólida" em fundos coloridos.
+        """
+        w, h   = self.HITBOX_W, self.HITBOX_H
+        surf   = pygame.Surface((w, h), pygame.SRCALPHA)
+        surf.fill((0, 0, 0, 0))   # totalmente transparente
+
+        if cor_override is not None:
+            cor_bandeira = cor_override
+        else:
+            cor_bandeira = self._COR_BANDEIRA_ON if ativo else self._COR_BANDEIRA_OFF
+
+        # ── Poste (linha vertical 2px, do topo ao fundo) ─────────────
+        poste_x = w // 2 - 1   # centralizado
+        pygame.draw.rect(surf, self._COR_POSTE, (poste_x, 0, 2, h - 4))
+
+        # ── Bandeira (retângulo 10×8 px, partindo do topo do poste) ───
+        # Posicionada à direita do poste para leitura clara.
+        pygame.draw.rect(surf, cor_bandeira, (poste_x + 2, 2, 10, 8))
+
+        # ── Base (bloco 6×4 px na base do poste) ─────────────────────
+        pygame.draw.rect(surf, self._COR_BASE, (poste_x - 2, h - 4, 6, 4))
+
+        return surf
+
+    # ------------------------------------------------------------------
+    # ATIVAÇÃO
+    # ------------------------------------------------------------------
+
+    def ativar(self) -> None:
+        """
+        Marca este checkpoint como ativo e atualiza o visual.
+
+        Chamado SOMENTE pelo Game (main.py) ao detectar colisão com
+        o Player. O Checkpoint nunca se autoativa.
+
+        Idempotente: chamar ativar() num checkpoint já ativo não causa
+        efeito colateral — a atribuição de image é inofensiva.
+        """
+        self.ativo = True
+        self.image = self._img_ativo
+
+    def marcar_como_anterior(self) -> None:
+        """
+        Rebaixa este checkpoint de 'respawn atual' para 'visitado mas superado'.
+
+        Chamado pelo Game quando um checkpoint posterior é ativado.
+        Mantém self.ativo = True (foi tocado) mas muda o visual para
+        verde apagado — comunica ao jogador que não é mais o respawn ativo.
+
+        Por que não desativar (ativo = False)?
+        ─────────────────────────────────────────
+        self.ativo = False reabriria o checkpoint para nova ativação,
+        o que alteraria o respawn retroativamente. O estado 'anterior'
+        é puramente visual — o checkpoint permanece tocado.
+        """
+        self.image = self._img_anterior
+
+
+# ══════════════════════════════════════════════════════════════════════
+# SAÍDA DE FASE
+# ══════════════════════════════════════════════════════════════════════
+
+class SaidaFase(pygame.sprite.Sprite):
+    """
+    Marcador visual da saída de fase — ponto de chegada que conclui o nível.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    RESPONSABILIDADE ÚNICA
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    Este sprite SÓ sabe onde está e como se desenha.
+    Quem detecta a colisão, decide avançar de fase e protege contra
+    múltiplos disparos é exclusivamente o Game (main.py).
+    O Player nunca importa nem referencia SaidaFase.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    CONTRATO PÚBLICO
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+      self.rect  : pygame.Rect    — hitbox em world-space (colisão + draw)
+      self.image : pygame.Surface — visual do portal/saída
+
+    Não há estado mutável além dos herdados de Sprite. O Game controla
+    tudo — este sprite apenas existe para ser colidido e renderizado.
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    VISUAL PROCEDURAL
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    Construído proceduralmente sem assets externos — o jogo não trava
+    por arquivo ausente.
+
+    Estrutura visual (LARGURA × ALTURA pixels):
+
+        ┌─────────────────────────┐
+        │  moldura externa        │  borda verde-escuro 3px
+        │  ┌─────────────────┐   │
+        │  │ fundo gradiente │   │  verde-escuro translúcido
+        │  │                 │   │
+        │  │   ► ► ►         │   │  setas verdes claras (→ direção saída)
+        │  │                 │   │
+        │  └─────────────────┘   │
+        │  "SAÍDA" centralizado   │  texto branco pequeno
+        └─────────────────────────┘
+
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    DIMENSÕES E HITBOX
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    LARGURA = 2 tiles   ALTURA = 3 tiles   (baseado em TILE_SIZE implícito)
+
+    A hitbox coincide com o visual inteiro — intencionalmente permissiva.
+    O jogador deve conseguir alcançar a saída sem precisão milimétrica.
+    Para ajustar: alterar LARGURA e ALTURA sem mexer em mais nada.
+    """
+
+    # ── Dimensões da hitbox (e do visual) — em pixels ─────────────────
+    # Expressas em múltiplos de tile (40 px) para alinhar ao grid do mapa.
+    # 2 tiles largo × 3 tiles alto = 80 × 120 px.
+    LARGURA: int = 80    # 2 × TILE_SIZE
+    ALTURA:  int = 120   # 3 × TILE_SIZE
+
+    # ── Cores procedurais ─────────────────────────────────────────────
+    _COR_FUNDO:    tuple = ( 10,  60,  10, 180)   # verde-escuro translúcido (RGBA)
+    _COR_MOLDURA:  tuple = ( 50, 200,  80)         # verde médio (RGB)
+    _COR_SETA:     tuple = (150, 255, 150)         # verde claro (RGB)
+    _COR_TEXTO:    tuple = (255, 255, 255)         # branco puro (RGB)
+
+    def __init__(self, x: int, y: int) -> None:
+        """
+        Parâmetros
+        ──────────
+        x, y : topleft em coordenadas de mundo (pixels).
+               Fornecidos pelo loader já convertidos para o espaço lógico
+               do motor (col × TILE_SIZE, row × TILE_SIZE).
+        """
+        super().__init__()
+
+        self.image = self._construir_surface()
+        self.rect  = pygame.Rect(x, y, self.LARGURA, self.ALTURA)
+
+    # ------------------------------------------------------------------
+    # CONSTRUÇÃO VISUAL
+    # ------------------------------------------------------------------
+
+    def _construir_surface(self) -> pygame.Surface:
+        """
+        Gera a Surface do portal de saída proceduralmente.
+
+        Pipeline
+        ─────────
+        1. Surface SRCALPHA (transparência total)
+        2. Fundo verde-escuro translúcido (RGBA fill com subsurface)
+        3. Moldura retangular (borda 3px)
+        4. Três setas "►" distribuídas verticalmente
+        5. Texto "SAÍDA" centralizado na base
+
+        Por que SRCALPHA?
+        ─────────────────
+        Permite que o fundo do portal seja semi-transparente, deixando
+        o cenário atrás visível — sinaliza "passagem" sem bloquear a view.
+
+        Por que setas desenhadas com rects e não com font?
+        ────────────────────────────────────────────────────
+        pygame.font.SysFont() pode ter latência de I/O no __init__ se
+        chamado repetidamente. As setas geométricas custam apenas
+        pygame.draw.polygon() — zero I/O, zero dependência de sistema.
+        O texto "SAÍDA" usa SysFont uma única vez e é aceitável.
+        """
+        w, h = self.LARGURA, self.ALTURA
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        surf.fill((0, 0, 0, 0))   # limpa para transparente
+
+        # ── Fundo semi-transparente ───────────────────────────────────
+        fundo = pygame.Surface((w - 6, h - 6), pygame.SRCALPHA)
+        fundo.fill(self._COR_FUNDO)
+        surf.blit(fundo, (3, 3))
+
+        # ── Moldura (borda 3px) ───────────────────────────────────────
+        pygame.draw.rect(surf, self._COR_MOLDURA, (0, 0, w, h), 3)
+
+        # ── Setas geométricas (triângulos apontando direita) ──────────
+        # Três setas distribuídas em y: 25%, 50%, 75% da altura.
+        # Cada seta: triângulo isósceles 16×12 px centralizado em x.
+        cx    = w // 2          # centro horizontal
+        sw    = 16              # largura da seta
+        sh    = 12              # altura da seta
+        for frac in (0.28, 0.50, 0.72):
+            sy = int(h * frac)  # y do centro da seta
+            pontos = [
+                (cx + sw // 2, sy),            # ponta direita
+                (cx - sw // 2, sy - sh // 2),  # canto superior esquerdo
+                (cx - sw // 2, sy + sh // 2),  # canto inferior esquerdo
+            ]
+            pygame.draw.polygon(surf, self._COR_SETA, pontos)
+
+        # ── Texto "SAÍDA" na base ─────────────────────────────────────
+        # SysFont size 14: pequeno o suficiente para caber em 80px de largura.
+        try:
+            fonte = pygame.font.SysFont(None, 14)
+            txt   = fonte.render("SAÍDA", True, self._COR_TEXTO)
+            tx    = (w - txt.get_width())  // 2
+            ty    = h - txt.get_height() - 5
+            surf.blit(txt, (tx, ty))
+        except Exception:
+            pass   # font falhou → visual sem texto, jogo não trava
+
+        return surf

@@ -83,6 +83,7 @@ PLAYER_SPEED:        float = 250.0    # velocidade horizontal máxima (px/s)
 PLAYER_GRAVITY:      float = 1_200.0  # aceleração gravitacional para baixo (px/s²)
 PLAYER_JUMP_FORCE:   float = -550.0   # impulso inicial do pulo — negativo = para cima (px/s)
 PLAYER_STOMP_BOUNCE: float = -350.0   # impulso após pisão em inimigo (px/s)
+PLAYER_WALL_JUMP_FORCE: float = 220.0  # magnitude mínima de vel_x para considerar wall-jump (px/s)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -144,11 +145,14 @@ MUSICA_MENU: str = str(_AUDIO_DIR / "musica_menu.ogg")
 MUSICA_FASE: str = str(_AUDIO_DIR / "musica_fase.ogg")
 
 # Efeitos sonoros (carregados na RAM para disparo imediato)
-SFX_PULO:    str = str(_AUDIO_DIR / "sfx_pulo.wav")
-SFX_MOEDA:   str = str(_AUDIO_DIR / "sfx_moeda.wav")
-SFX_MORTE:   str = str(_AUDIO_DIR / "sfx_morte.wav")
-SFX_STOMP:   str = str(_AUDIO_DIR / "sfx_stomp.wav")
-SFX_VITORIA: str = str(_AUDIO_DIR / "sfx_vitoria.wav")
+SFX_PULO:       str = str(_AUDIO_DIR / "sfx_pulo.wav")
+SFX_MOEDA:      str = str(_AUDIO_DIR / "sfx_moeda.wav")
+SFX_MORTE:      str = str(_AUDIO_DIR / "sfx_morte.wav")
+SFX_STOMP:      str = str(_AUDIO_DIR / "sfx_stomp.wav")
+SFX_LAND:       str = str(_AUDIO_DIR / "sfx_land.wav")
+SFX_CHECKPOINT: str = str(_AUDIO_DIR / "sfx_checkpoint.wav")
+SFX_DAMAGE:     str = str(_AUDIO_DIR / "sfx_damage.wav")
+SFX_VITORIA:    str = str(_AUDIO_DIR / "sfx_vitoria.wav")
 
 # Fases
 FASE_1: str = str(BASE_DIR / "fase1.txt")
